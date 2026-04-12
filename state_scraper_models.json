@@ -1,0 +1,460 @@
+{
+  "_meta": {
+    "version": 1,
+    "description": "Per-state scraping model definitions for currently active states. Each model describes the primary endpoint or portal, the query strategy, normalization approach, and one or two sample schools taken from the input CSV."
+  },
+  "states": {
+    "CA": {
+      "status": "active",
+      "mode": "open_data_api",
+      "api_type": "ckan_sql",
+      "method": "GET",
+      "endpoint": "https://data.ca.gov/api/3/action/datastore_search_sql",
+      "query_template": "SELECT facility_name, facility_address, facility_city, facility_state, facility_zip, facility_capacity, facility_telephone_number FROM \"5bac6551-4d6c-45d6-93b8-e6ded428d98e\" WHERE facility_name ILIKE '%{name_variant}%' AND facility_city ILIKE '%{city}%' LIMIT 10",
+      "filters": ["facility_name", "facility_city"],
+      "matching_strategy": "Generate name variants from abbreviations and suffix stripping, then score by name token overlap and city equality.",
+      "source_fields": {
+        "Mailing_Address": ["facility_address", "facility_city", "facility_state", "facility_zip"],
+        "Mailing_Zip": ["facility_zip"],
+        "Telephone": ["facility_telephone_number"],
+        "Capacity (optional)": ["facility_capacity"]
+      },
+      "samples": [
+        {"pid": "2206200", "daycare_name": "MILL'S COLLEGE CHILDREN'S SCH", "city": "Oakland"},
+        {"pid": "2267515", "daycare_name": "STORY LAND PRE-SCHOOL", "city": "Livermore"}
+      ]
+    },
+    "CT": {
+      "status": "active",
+      "mode": "open_data_api",
+      "api_type": "socrata_soql",
+      "method": "GET",
+      "endpoint": "https://data.ct.gov/resource/h8mr-dn95.json",
+      "query_template": "SELECT name, address2, address3, city, statecode, zipcode, phone, minimumage, maximumage, maximumcapacity WHERE caseless_contains(name, '{name_variant}') AND caseless_one_of(city, '{city}')",
+      "filters": ["name", "city"],
+      "matching_strategy": "Generate name variants, then score by token overlap, city equality, and presence of capacity.",
+      "source_fields": {
+        "Mailing_Address": ["address2", "address3", "city", "statecode", "zipcode"],
+        "Mailing_Zip": ["zipcode"],
+        "Telephone": ["phone"],
+        "Capacity (optional)": ["maximumcapacity"],
+        "Age Range (optional)": ["minimumage", "maximumage"]
+      },
+      "samples": [
+        {"pid": "2344515", "daycare_name": "ST PAUL'S NURSERY SCHOOL", "city": "Fairfield"},
+        {"pid": "2344888", "daycare_name": "PLAYLAND NURSERY SCHOOL", "city": "New Canaan"}
+      ]
+    },
+    "DC": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "query_param_portal",
+      "method": "browser",
+      "endpoint": "https://mychildcare.dc.gov/Home/SearchFacilities?search={name}",
+      "query_template": "Open the DC facility search URL with the search parameter set to each normalized provider-name variant, then rank returned facilities by name overlap and Washington/DC context.",
+      "filters": ["search"],
+      "matching_strategy": "Use abbreviation-expanded provider-name variants in the query parameter and score returned facilities by exact token overlap and DC city match.",
+      "samples": [
+        {"pid": "2357380", "daycare_name": "ST TIMOTHYS NURSERY SCHOOL CDC", "city": "Washington"},
+        {"pid": "12301476", "daycare_name": "THURGOOD MARSHALL CHLD DEV CTR", "city": "Washington"}
+      ]
+    },
+    "DE": {
+      "status": "active",
+      "mode": "open_data_api",
+      "api_type": "socrata_soql",
+      "method": "GET",
+      "endpoint": "https://data.delaware.gov/resource/iuzd-3dbt.json",
+      "query_template": "SELECT resource_name, site_street_address, site_city, site_state, site_zip_code, phone_number, age_range, capacity WHERE caseless_contains(resource_name, '{name_variant}') AND caseless_one_of(site_city, '{city}')",
+      "filters": ["resource_name", "site_city"],
+      "matching_strategy": "Generate name variants from abbreviations and score by resource_name overlap and exact city match.",
+      "source_fields": {
+        "Mailing_Address": ["site_street_address", "site_city", "site_state", "site_zip_code"],
+        "Mailing_Zip": ["site_zip_code"],
+        "Telephone": ["phone_number"],
+        "Capacity (optional)": ["capacity"],
+        "Age Range (optional)": ["age_range"]
+      },
+      "samples": [
+        {"pid": "2390671", "daycare_name": "BELLEVUE COMMUNITY CENTER", "city": "Wilmington"},
+        {"pid": "2393315", "daycare_name": "ST ANNS SCHOOL", "city": "Middletown"}
+      ]
+    },
+    "CO": {
+      "status": "active",
+      "mode": "open_data_api",
+      "api_type": "socrata_soql",
+      "method": "GET",
+      "endpoint": "https://data.colorado.gov/resource/a9rr-k8mu.json",
+      "query_template": "SELECT provider_name, street_address, city, state, zip, total_licensed_capacity WHERE caseless_contains(provider_name, '{name_variant}') AND caseless_one_of(city, '{city}')",
+      "filters": ["provider_name", "city"],
+      "matching_strategy": "Generate name variants from abbreviations and score by provider_name overlap and exact city match.",
+      "source_fields": {
+        "Mailing_Address": ["street_address", "city", "state", "zip"],
+        "Mailing_Zip": ["zip"],
+        "Capacity (optional)": ["total_licensed_capacity"]
+      },
+      "samples": [
+        {"pid": "2386341", "daycare_name": "HOLY TRINITY PRESCHOOL", "city": "Littleton"},
+        {"pid": "2384912", "daycare_name": "ASCENT EARLY CHILDHOOD CTR", "city": "Denver"}
+      ]
+    },
+    "AZ": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://azchildcaresearch.azdes.gov/s/providersearch?language=en_US",
+      "query_template": "Portal search by provider name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use abbreviation-expanded name variants and city filtering, then rank by exact token overlap in provider search results.",
+      "samples": [
+        {"pid": "2316127", "daycare_name": "SHEPHERD OF THE VALLEY PRESCH", "city": "Phoenix"},
+        {"pid": "2320971", "daycare_name": "TRINITY CHRISTIAN SCH", "city": "Prescott"}
+      ]
+    },
+    "HI": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://childcareprovidersearch.dhs.hawaii.gov/",
+      "query_template": "Portal search by provider/program name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use expanded name variants; rank by provider name similarity and city/state match.",
+      "samples": [
+        {"pid": "2418154", "daycare_name": "ST CLEMENTS SCHOOL", "city": "Honolulu"},
+        {"pid": "2419392", "daycare_name": "KAHULUI BAPTIST PRE-SCHOOL", "city": "Kahului"}
+      ]
+    },
+    "IL": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://sunshine.dcfs.illinois.gov/Content/Licensing/Daycare/ProviderLookup.aspx",
+      "query_template": "Portal search by provider name and city when available",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use abbreviation expansion heavily for CTR/CDC/SCH style names, then score by city and exact tokens.",
+      "samples": [
+        {"pid": "2423446", "daycare_name": "ZEARING CHILD ENRICHMENT CTR", "city": "Princeton"},
+        {"pid": "2424828", "daycare_name": "ST DAVID'S NURSERY SCHOOL", "city": "Glenview"}
+      ]
+    },
+    "MD": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "slug_url_portal",
+      "method": "browser",
+      "endpoint": "https://locatesearch.marylandfamilynetwork.org/city/{mailing_city_in_small}-md",
+      "query_template": "Open city slug page, then match providers within city results using normalized name variants",
+      "filters": ["city slug", "provider name"],
+      "matching_strategy": "Slug city, fetch city-specific result page, and score name overlap against listed providers.",
+      "samples": [
+        {"pid": "2491962", "daycare_name": "MONSGNR SLADE EDUC CTR", "city": "Glen Burnie"},
+        {"pid": "2494859", "daycare_name": "GOOD SHEPHERD EDUCATION CENTER", "city": "Waldorf"}
+      ]
+    },
+    "MS": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://www.msdh.provider.webapps.ms.gov/ccsearch.aspx",
+      "query_template": "Portal search by provider name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use abbreviation-expanded name variants and city filters, then rank by exact token overlap in portal results.",
+      "samples": [
+        {"pid": "2574002", "daycare_name": "FIRST BAPTIST CHURCH CDC", "city": "Jackson"},
+        {"pid": "2576253", "daycare_name": "ST RICHARD EARLY CHILDHOOD", "city": "Jackson"}
+      ]
+    },
+    "MI": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://greatstarttoquality.org/find-programs/",
+      "query_template": "Portal search by provider/program name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use expanded variants and rank by provider name similarity plus city match within Great Start to Quality results.",
+      "samples": [
+        {"pid": "2528038", "daycare_name": "UNIVERSITY PRESBYTERIAN PRE-SCHOOL", "city": "Rochester"},
+        {"pid": "2534344", "daycare_name": "MT CLEMENS COOPERATIVE PRESCHOOL", "city": "Mount Clemens"}
+      ]
+    },
+    "MN": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://www.parentaware.org/search/#/",
+      "query_template": "Portal search by provider/program name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use expanded variants and rank by provider name similarity plus city match within Parent Aware results.",
+      "samples": [
+        {"pid": "2542863", "daycare_name": "A NEW CREATION CHILD CARE", "city": "Minneapolis"},
+        {"pid": "2553248", "daycare_name": "YMCA EARLY CHILDHOOD LEARNING CTR", "city": "Rochester"}
+      ]
+    },
+    "NC": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://ncchildcare.ncdhhs.gov/childcaresearch",
+      "query_template": "Portal search by facility name and city",
+      "filters": ["facility name", "city"],
+      "matching_strategy": "Use expanded variants for DEV/CENTER/CARE abbreviations, then score by city and token overlap.",
+      "samples": [
+        {"pid": "1457171", "daycare_name": "SELWYN CHILD DEV CENTER", "city": "Charlotte"},
+        {"pid": "2628048", "daycare_name": "FIRST PRESBYTERIAN DAY CARE", "city": "Durham"}
+      ]
+    },
+    "NH": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://new-hampshire.my.site.com/nhccis/NH_ChildCareSearch",
+      "query_template": "Portal search by provider name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use abbreviation-expanded name variants and city filters, then rank by exact token overlap in portal results.",
+      "samples": [
+        {"pid": "2599598", "daycare_name": "YMCA OF GREATER NASHUA", "city": "Merrimack"},
+        {"pid": "2604070", "daycare_name": "EXETER DAY SCHOOL", "city": "Exeter"}
+      ]
+    },
+    "NM": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://childcare.ececd.nm.gov/search",
+      "query_template": "Portal search by provider name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use abbreviation-expanded name variants and city filters, then rank by exact token overlap in portal results.",
+      "samples": [
+        {"pid": "2659237", "daycare_name": "ELDORADO PRE-SCHOOL", "city": "Santa Fe"},
+        {"pid": "2663181", "daycare_name": "ST JOHNS CHILD CARE CENTER", "city": "Albuquerque"}
+      ]
+    },
+    "ND": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://search.ec.hhs.nd.gov/",
+      "query_template": "Portal search by provider/program name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use normalized variants and exact city filters first because state volume is small.",
+      "samples": [
+        {"pid": "5290872", "daycare_name": "NDSU WELLNESS CHILD CARE CTR", "city": "Fargo"}
+      ]
+    },
+    "NV": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "licensee_search_portal",
+      "method": "browser",
+      "endpoint": "https://nvdpbh.aithent.com/Protected/LIC/LicenseeSearch.aspx?Program=HF&PubliSearch=Y&returnURL=%7e%2fLogin.aspx%3fTI%3d2#noback",
+      "query_template": "Portal search by licensee/provider name and city when available",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use abbreviation-expanded name variants and rank by exact token overlap in licensee search results.",
+      "samples": [
+        {"pid": "2643294", "daycare_name": "CHILD GARDEN", "city": "Las Vegas"},
+        {"pid": "2645065", "daycare_name": "LA PETITE ACADEMY", "city": "Reno"}
+      ]
+    },
+    "NJ": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://childcareexplorer.njccis.com/portal/",
+      "query_template": "Portal search by center name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use shortened and expanded variants; rank by exact city and distinctive tokens.",
+      "samples": [
+        {"pid": "1791513", "daycare_name": "NURSERY RHYMES SCHOOL AND KIN", "city": "Saddle Brook"},
+        {"pid": "2589894", "daycare_name": "OPEN DOOR NURSERY SCHOOL", "city": "Millburn"}
+      ]
+    },
+    "OK": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "query_param_portal",
+      "method": "browser",
+      "endpoint": "https://ccl.dhs.ok.gov/providers",
+      "query_template": "https://ccl.dhs.ok.gov/providers?provider-name={urlencoded_name_variant}",
+      "filters": ["provider-name"],
+      "matching_strategy": "Try direct provider-name variants, then filter rendered results by city.",
+      "samples": [
+        {"pid": "2667812", "daycare_name": "COMMUNITY AFTER SCHOOL-WILSON", "city": "Norman"},
+        {"pid": "2672879", "daycare_name": "ST LUKES CHILDREN'S CENTER", "city": "Oklahoma City"}
+      ]
+    },
+    "PA": {
+      "status": "active",
+      "mode": "open_data_api",
+      "api_type": "socrata_soql",
+      "method": "GET",
+      "endpoint": "https://data.pa.gov/resource/ajn5-kaxt.json",
+      "query_template": "SELECT facility_name, facility_address, facility_address_continued, facility_city, facility_state, facility_zip_code, facility_phone, capacity WHERE caseless_one_of(facility_city, '{city}') AND caseless_contains(facility_name, '{name_variant}')",
+      "filters": ["facility_name", "facility_city"],
+      "matching_strategy": "Use SoQL text filters with facility_name token variants and exact facility_city equality, then score locally by token overlap and city/state match.",
+      "source_fields": {
+        "Mailing_Address": ["facility_address", "facility_address_continued", "facility_city", "facility_state", "facility_zip_code"],
+        "Mailing_Zip": ["facility_zip_code"],
+        "Telephone": ["facility_phone"],
+        "Capacity (optional)": ["capacity"]
+      },
+      "samples": [
+        {"pid": "2681674", "daycare_name": "CARRIAGE HOUSE CHILDREN'S CTR", "city": "Pittsburgh"},
+        {"pid": "2682563", "daycare_name": "NORTHMONT CDC & PRE-SCHOOL", "city": "Pittsburgh"}
+      ]
+    },
+    "SC": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://search.sc-ccrr.org/search",
+      "query_template": "Portal search by provider name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use abbreviation-expanded name variants and city filters, then rank by token overlap in portal results.",
+      "samples": [
+        {"pid": "2698540", "daycare_name": "ADVENT CHILD DEVELOPMENT CTR", "city": "Spartanburg"},
+        {"pid": "2699957", "daycare_name": "ST MICHAELS DAY SCHOOL", "city": "Charleston"}
+      ]
+    },
+    "RI": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "web_search_portal",
+      "method": "browser",
+      "endpoint": "https://ridhsrises.my.site.com/ri/s/consumer-search?language=en_US&lang=en",
+      "query_template": "Portal search by provider name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use abbreviation-expanded name variants and city filters, then rank by exact token overlap in consumer search results.",
+      "samples": [
+        {"pid": "2691017", "daycare_name": "ST AUGUSTINE SCHOOL", "city": "Providence"},
+        {"pid": "2693636", "daycare_name": "PROVIDENCE COUNTRY DAY SCHOOL", "city": "East Providence"}
+      ]
+    },
+    "TN": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "map_portal",
+      "method": "browser",
+      "endpoint": "https://onedhs.tn.gov/csp?id=tn_cc_prv_maps",
+      "query_template": "Provider map search by name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use name variants, especially KDGN/CH abbreviations, then match Nashville/other city context.",
+      "samples": [
+        {"pid": "2708404", "daycare_name": "CRIEVE HALL CH OF CHRIST KDGN", "city": "Nashville"},
+        {"pid": "2709264", "daycare_name": "HARPETH HEIGHTS PRE-SCHOOL", "city": "Nashville"}
+      ]
+    },
+    "TX": {
+      "status": "active",
+      "mode": "open_data_api",
+      "api_type": "socrata_soql",
+      "method": "GET",
+      "endpoint": "https://data.texas.gov/resource/bc5r-88dy.json",
+      "query_template": "SELECT operation_name, phone_number, website_address, total_capacity, address_line, city, state, zipcode WHERE caseless_contains(operation_name, \"{name_variant}\") AND caseless_one_of(city, \"{city}\")",
+      "filters": ["operation_name", "city"],
+      "matching_strategy": "Generate multiple name variants and score by operation name, city, state, and provider type fields.",
+      "source_fields": {
+        "Mailing_Address": ["address_line", "city", "state", "zipcode"],
+        "Mailing_Zip": ["zipcode"],
+        "Telephone": ["phone_number"],
+        "URL": ["website_address"],
+        "Capacity (optional)": ["total_capacity"]
+      },
+      "samples": [
+        {"pid": "1027661", "daycare_name": "IMMANUEL LUTHERAN SCHOOL", "city": "Houston"},
+        {"pid": "2873164", "daycare_name": "HAND PRINTS CHILD CARE", "city": "Dallas"}
+      ]
+    },
+    "UT": {
+      "status": "active",
+      "mode": "open_data_api",
+      "api_type": "socrata_json",
+      "method": "GET",
+      "endpoint": "https://opendata.utah.gov/resource/nbkf-w8sj.json",
+      "query_template": "Fetch JSON resource and filter the returned list by provider name variants and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Load the small JSON list and score by provider-name token overlap and exact city match.",
+      "source_fields": {
+        "Mailing_Address": ["address", "street_address", "city", "state", "zip", "zipcode"],
+        "Mailing_Zip": ["zip", "zipcode"],
+        "Telephone": ["phone", "phone_number"],
+        "Capacity (optional)": ["capacity", "licensed_capacity"],
+        "Age Range (optional)": ["age_range", "ages_served"]
+      },
+      "samples": [
+        {"pid": "2730409", "daycare_name": "ST PAULS PRESCHOOL", "city": "Salt Lake City"},
+        {"pid": "2732211", "daycare_name": "MONTESSORI CHILDRENS HOUSE", "city": "Provo"}
+      ]
+    },
+    "VA": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "cgi_portal",
+      "method": "browser",
+      "endpoint": "https://www.dss.virginia.gov/facility/search/cc2.cgi?rm=Search",
+      "query_template": "Portal search by provider name; detail pages use cc2.cgi?rm=Details;ID={facility_id}",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use expanded variants for ST/EPISCOPAL/PRE-SCHOOL style names, then score against city on detail or result rows.",
+      "samples": [
+        {"pid": "2072138", "daycare_name": "ST AIDANS EPISCOPAL DAY SCHOOL", "city": "Alexandria"},
+        {"pid": "2072554", "daycare_name": "OVERLEE PRE-SCHOOL", "city": "Arlington"}
+      ]
+    },
+    "WA": {
+      "status": "active",
+      "mode": "open_data_api",
+      "api_type": "socrata_soql",
+      "method": "GET",
+      "endpoint": "https://data.wa.gov/resource/was8-3ni8.json",
+      "query_template": "SELECT providername, licensecapacity, startingage, endingage, primarycontactphonenumber, physicalstreetaddress, physicalcity, physicalstate, physicalzip WHERE caseless_one_of(providername, '{name_variant}') AND caseless_one_of(physicalcity, '{city}')",
+      "filters": ["providername", "physicalcity"],
+      "matching_strategy": "Use exact and abbreviation-expanded provider name variants, then score by exact providername and city match.",
+      "source_fields": {
+        "Mailing_Address": ["physicalstreetaddress", "physicalcity", "physicalstate", "physicalzip"],
+        "Mailing_Zip": ["physicalzip"],
+        "Telephone": ["primarycontactphonenumber"],
+        "Capacity (optional)": ["licensecapacity"],
+        "Age Range (optional)": ["startingage", "endingage"]
+      },
+      "samples": [
+        {"pid": "2720148", "daycare_name": "NEWPORT CHILDRENS PRESCHOOL", "city": "Bellevue"},
+        {"pid": "2720991", "daycare_name": "LITTLE PEOPLE PRESCHOOL", "city": "Seattle"}
+      ]
+    },
+    "WV": {
+      "status": "active",
+      "mode": "portal",
+      "api_type": "portal_directory",
+      "method": "browser",
+      "endpoint": "https://bfa.wv.gov/page/find-childcare-provider",
+      "query_template": "Open provider-finder page, follow through to search surface, then search by provider name and city",
+      "filters": ["provider name", "city"],
+      "matching_strategy": "Use abbreviation-expanded name variants and city filters after traversing the provider finder workflow.",
+      "samples": [
+        {"pid": "2740892", "daycare_name": "ST JOHNS DAY CARE", "city": "Charleston"},
+        {"pid": "2742870", "daycare_name": "TRINITY LUTHERAN PRE-SCHOOL", "city": "Morgantown"}
+      ]
+    }
+  },
+  "abbreviation_strategy": {
+    "goal": "Generate broader but still targeted provider-name candidates from abbreviated daycare names before hitting APIs/portals.",
+    "rules": [
+      "Expand common abbreviations like CTR->CENTER, CDC->CHILD DEVELOPMENT CENTER, CH->CHURCH, KDGN->KINDERGARTEN, DEV->DEVELOPMENT, EDUC->EDUCATION, MONSGNR->MONSIGNOR, ST->SAINT.",
+      "Strip generic suffixes like DAY CARE, CHILD CARE, CENTER, SCHOOL, HOME, ACADEMY to create relaxed variants.",
+      "Try both the original abbreviation and the expanded phrase because some official sources store the short form and some store the long form.",
+      "Score candidates with city/state equality first, then token overlap on distinctive words, then capacity/age/address presence as tie-breakers."
+    ]
+  }
+}

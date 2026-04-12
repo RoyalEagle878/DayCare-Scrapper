@@ -1,0 +1,519 @@
+{
+  "_meta": {
+    "version": 2,
+    "description": "Official childcare resource registry for enrichment adapters. status=verified means the user explicitly confirmed the source. status=not_verified means the entry may contain a lead or fallback URL but is not yet user-confirmed.",
+    "fallback_source": "https://childcare.gov/state-resources"
+  },
+  "states": {
+    "AL": {
+      "name": "Alabama",
+      "status": "not-found",
+      "source_type": "google",
+      "portal_url": "https://childcare.gov/state-resources/alabama/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "google_discovered_portal",
+      "query_notes": "Google query for 'child care search Alabama' surfaced Alabama Child Care Search via the childcare.gov state resources page.",
+      "notes": "No direct Alabama state search endpoint confirmed yet."
+    },
+    "AK": {
+      "name": "Alaska",
+      "status": "not-found",
+      "source_type": "licensing_portal",
+      "portal_url": "https://health.alaska.gov/en/education/child-care/child-care-for-parents-and-families/",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use official Alaska child care family/provider search resources rather than assuming open-data endpoint.",
+      "notes": "Official state childcare source verified as portal/family resource, not a confirmed open-data dataset."
+    },
+    "AZ": {
+      "name": "Arizona",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://azchildcaresearch.azdes.gov/s/providersearch?language=en_US",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Arizona child care search with provider name and city filters.",
+      "notes": "Direct Arizona provider search URL provided by user and activated for staging."
+    },
+    "AR": {
+      "name": "Arkansas",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://ardhslicensing.my.site.com/elicensing/s/search-provider/find-providers?tab=CC&language=en_US",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Arkansas provider search portal directly for child care provider lookups.",
+      "notes": "Direct Arkansas provider search URL provided by user."
+    },
+    "CA": {
+      "name": "California",
+      "status": "verified",
+      "source_type": "open_data_dataset",
+      "portal_url": "https://mychildcareplan.org/provider-search/",
+      "dataset_url": "https://data.ca.gov/api/3/action/datastore_search_sql",
+      "api_type": "ckan_sql",
+      "query_notes": "Query datastore_search_sql against resource 5bac6551-4d6c-45d6-93b8-e6ded428d98e selecting facility_name, facility_address, facility_city, facility_state, facility_zip, facility_capacity, facility_telephone_number filtered by facility_name and facility_city.",
+      "notes": "Official California CKAN dataset endpoint provided and wired into scraper adapter."
+    },
+    "CO": {
+      "name": "Colorado",
+      "status": "verified",
+      "source_type": "open_data_dataset",
+      "portal_url": "https://data.colorado.gov/",
+      "dataset_url": "https://data.colorado.gov/resource/a9rr-k8mu.json",
+      "api_type": "socrata_soql",
+      "query_notes": "Use Colorado SODA API selecting provider_name, street_address, city, state, zip, total_licensed_capacity filtered by provider_name and city.",
+      "notes": "Direct Colorado SODA endpoint and query style provided by user and activated for staging."
+    },
+    "CT": {
+      "name": "Connecticut",
+      "status": "verified",
+      "source_type": "open_data_portal",
+      "portal_url": "https://data.ct.gov/",
+      "dataset_url": "https://data.ct.gov/resource/h8mr-dn95.json",
+      "api_type": "socrata_soql",
+      "query_notes": "Use SODA $query against h8mr-dn95 selecting name, address2, address3, city, statecode, zipcode, phone, minimumage, maximumage, maximumcapacity filtered by name and city.",
+      "notes": "Official Connecticut SODA dataset endpoint provided and wired into scraper adapter."
+    },
+    "DC": {
+      "name": "District of Columbia",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://mychildcare.dc.gov/Home/SearchFacilities?search={name}",
+      "dataset_url": "",
+      "api_type": "query_param_portal",
+      "query_notes": "Use DC MyChildCare facility search with the search query parameter populated from normalized provider-name variants.",
+      "notes": "Direct DC child care facility search URL pattern provided by user and activated for staging."
+    },
+    "DE": {
+      "name": "Delaware",
+      "status": "verified",
+      "source_type": "open_data_dataset",
+      "portal_url": "https://data.delaware.gov/",
+      "dataset_url": "https://data.delaware.gov/resource/iuzd-3dbt.json",
+      "api_type": "socrata_soql",
+      "query_notes": "Use Delaware SODA API selecting resource_name, site_street_address, site_city, site_state, site_zip_code, phone_number, age_range, capacity filtered by resource_name and site_city.",
+      "notes": "Direct Delaware SODA endpoint and query style provided by user and activated for staging."
+    },
+    "FL": {
+      "name": "Florida",
+      "status": "not-found",
+      "source_type": "licensing_portal",
+      "portal_url": "https://caressearch.myflfamilies.com/PublicSearch",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Florida CARES search portal where open dataset is unavailable.",
+      "notes": "Florida portal currently treated as not found for this project."
+    },
+    "GA": {
+      "name": "Georgia",
+      "status": "blocked",
+      "source_type": "google",
+      "portal_url": "https://childcare.gov/state-resources/georgia/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "google_discovered_portal",
+      "query_notes": "Google query for 'child care search Georgia' surfaced Georgia Child Care Search via the childcare.gov state resources page.",
+      "notes": "Georgia source currently treated as blocked for this project."
+    },
+    "HI": {
+      "name": "Hawaii",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://childcareprovidersearch.dhs.hawaii.gov/",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Hawaii DHS Child Care Provider Search directly for provider lookups and detail pages.",
+      "notes": "Direct Hawaii child care provider search portal verified."
+    },
+    "ID": {
+      "name": "Idaho",
+      "status": "not_verified",
+      "source_type": "federal_state_resource_directory",
+      "portal_url": "https://childcare.gov/state-resources/idaho/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "directory",
+      "query_notes": "Use childcare.gov Idaho state-resources page to reach Idaho's official child care search/licensing resources.",
+      "notes": "Federal official fallback seeded pending direct Idaho portal/dataset confirmation."
+    },
+    "IL": {
+      "name": "Illinois",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://sunshine.dcfs.illinois.gov/Content/Licensing/Daycare/ProviderLookup.aspx",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Illinois DCFS Daycare Provider Lookup directly for provider searches.",
+      "notes": "Direct Illinois daycare provider lookup URL provided by user."
+    },
+    "IN": {
+      "name": "Indiana",
+      "status": "not-found",
+      "source_type": "licensing_portal",
+      "portal_url": "https://www.in.gov/fssa/childcarefinder/",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Indiana FSSA Child Care Finder for provider lookups and filtering by program name/location.",
+      "notes": "Indiana source not reachable for this project."
+    },
+    "IA": {
+      "name": "Iowa",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://ccmis.dhs.state.ia.us/ClientPortal/ProviderSearch.aspx",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Iowa DHS provider search portal directly for provider lookups.",
+      "notes": "Direct Iowa provider search URL provided by user."
+    },
+    "KS": {
+      "name": "Kansas",
+      "status": "blocked",
+      "source_type": "federal_state_resource_directory",
+      "portal_url": "https://childcare.gov/state-resources/kansas/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "directory",
+      "query_notes": "Use childcare.gov Kansas state-resources page to reach Kansas' official child care search/licensing resources.",
+      "notes": "Kansas source currently treated as blocked for this project."
+    },
+    "KY": {
+      "name": "Kentucky",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://kynect.ky.gov/benefits/s/child-care-provider?language=en_US",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Kentucky Kynect child care provider search portal directly.",
+      "notes": "Direct Kentucky child care provider search URL provided by user."
+    },
+    "LA": {
+      "name": "Louisiana",
+      "status": "not-found",
+      "source_type": "federal_state_resource_directory",
+      "portal_url": "https://childcare.gov/state-resources/louisiana/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "directory",
+      "query_notes": "Use childcare.gov Louisiana state-resources page to reach Louisiana's official child care search/licensing resources.",
+      "notes": "No direct Louisiana child care search endpoint confirmed yet."
+    },
+    "ME": {
+      "name": "Maine",
+      "status": "not-found",
+      "source_type": "federal_state_resource_directory",
+      "portal_url": "https://childcare.gov/state-resources/maine/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "directory",
+      "query_notes": "Use childcare.gov Maine state-resources page to reach Maine's official child care search/licensing resources.",
+      "notes": "No direct Maine child care search endpoint confirmed yet."
+    },
+    "MD": {
+      "name": "Maryland",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://locatesearch.marylandfamilynetwork.org/city/{mailing_city_in_small}-md",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Maryland LOCATE search by city slug pattern such as baltimore-md.",
+      "notes": "Direct Maryland family network child care search URL pattern provided by user."
+    },
+    "MA": {
+      "name": "Massachusetts",
+      "status": "not-found",
+      "source_type": "licensing_portal",
+      "portal_url": "https://childcare.mass.gov/findchildcare",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Massachusetts EEC portal adapter with shadow DOM handling.",
+      "notes": "Massachusetts portal currently treated as not found for this project."
+    },
+    "MI": {
+      "name": "Michigan",
+      "status": "not_verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://greatstarttoquality.org/find-programs/",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Michigan Great Start to Quality Find Programs search.",
+      "notes": "Direct Michigan program finder URL provided by user."
+    },
+    "MN": {
+      "name": "Minnesota",
+      "status": "not_verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://www.parentaware.org/search/#/",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Minnesota Parent Aware search portal directly for provider lookups.",
+      "notes": "Direct Minnesota portal URL provided by user."
+    },
+    "MS": {
+      "name": "Mississippi",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://www.msdh.provider.webapps.ms.gov/ccsearch.aspx",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Mississippi child care search portal directly for provider lookups.",
+      "notes": "Direct Mississippi child care search URL provided by user and activated for staging."
+    },
+    "MO": {
+      "name": "Missouri",
+      "status": "blocked",
+      "source_type": "federal_state_resource_directory",
+      "portal_url": "https://childcare.gov/state-resources/missouri/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "directory",
+      "query_notes": "Use childcare.gov Missouri state-resources page to reach Missouri's official child care search/licensing resources.",
+      "notes": "Missouri source currently treated as blocked for this project."
+    },
+    "MT": {
+      "name": "Montana",
+      "status": "blocked",
+      "source_type": "federal_state_resource_directory",
+      "portal_url": "https://childcare.gov/state-resources/montana/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "directory",
+      "query_notes": "Use childcare.gov Montana state-resources page to reach Montana's official child care search/licensing resources.",
+      "notes": "Federal official fallback seeded pending direct Montana portal/dataset confirmation."
+    },
+    "NE": {
+      "name": "Nebraska",
+      "status": "not-found",
+      "source_type": "federal_state_resource_directory",
+      "portal_url": "https://childcare.gov/state-resources/nebraska/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "directory",
+      "query_notes": "Use childcare.gov Nebraska state-resources page to reach Nebraska's official child care search/licensing resources.",
+      "notes": "Nebraska source not reachable for this project."
+    },
+    "NV": {
+      "name": "Nevada",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://nvdpbh.aithent.com/Protected/LIC/LicenseeSearch.aspx?Program=HF&PubliSearch=Y&returnURL=%7e%2fLogin.aspx%3fTI%3d2#noback",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Nevada public licensee search for provider lookups.",
+      "notes": "Direct Nevada licensee search URL provided by user and activated for staging."
+    },
+    "NH": {
+      "name": "New Hampshire",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://new-hampshire.my.site.com/nhccis/NH_ChildCareSearch",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use New Hampshire child care search portal directly for provider lookups.",
+      "notes": "Direct New Hampshire child care search URL provided by user and activated for staging."
+    },
+    "NJ": {
+      "name": "New Jersey",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://childcareexplorer.njccis.com/portal/",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use New Jersey Child Care Explorer portal directly for provider searches.",
+      "notes": "Direct New Jersey child care explorer URL provided by user."
+    },
+    "NM": {
+      "name": "New Mexico",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://childcare.ececd.nm.gov/search",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use New Mexico child care search portal directly for provider lookups.",
+      "notes": "Direct New Mexico child care search URL provided by user and activated for staging."
+    },
+    "NY": {
+      "name": "New York",
+      "status": "not-found",
+      "source_type": "open_data_dataset",
+      "portal_url": "https://data.ny.gov/",
+      "dataset_url": "https://data.ny.gov/Human-Services/Child-Care-Regulated-Programs-Map/s8uq-s4wq/about",
+      "api_type": "socrata",
+      "query_notes": "Use New York OCFS regulated programs open dataset/API.",
+      "notes": "Not using New York source for now."
+    },
+    "NC": {
+      "name": "North Carolina",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://ncchildcare.ncdhhs.gov/childcaresearch",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use North Carolina DHHS child care search portal directly for provider lookups.",
+      "notes": "Direct North Carolina child care search portal verified."
+    },
+    "ND": {
+      "name": "North Dakota",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://search.ec.hhs.nd.gov/",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use North Dakota HHS early childhood search portal directly for provider lookups.",
+      "notes": "Direct North Dakota child care search portal verified."
+    },
+    "OH": {
+      "name": "Ohio",
+      "status": "rejected",
+      "source_type": "licensing_portal",
+      "portal_url": "https://childcaresearch.ohio.gov/provider/",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Ohio Child Care Search by program name, city, zip, and program type. The page also exposes a CSV export of current programs.",
+      "notes": "Ohio source currently treated as rejected for this project."
+    },
+    "OK": {
+      "name": "Oklahoma",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://ccl.dhs.ok.gov/providers",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Oklahoma DHS provider search with query params such as provider-name and location filters.",
+      "notes": "Direct Oklahoma child care provider search portal verified."
+    },
+    "OR": {
+      "name": "Oregon",
+      "status": "not-found",
+      "source_type": "federal_state_resource_directory",
+      "portal_url": "https://childcare.gov/state-resources/oregon/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "directory",
+      "query_notes": "Use childcare.gov Oregon state-resources page to reach Oregon's official child care search/licensing resources.",
+      "notes": "Oregon source not reachable for this project."
+    },
+    "PA": {
+      "name": "Pennsylvania",
+      "status": "verified",
+      "source_type": "open_data_dataset",
+      "portal_url": "https://data.pa.gov/",
+      "dataset_url": "https://data.pa.gov/resource/ajn5-kaxt.json",
+      "api_type": "socrata_soql",
+      "query_notes": "Use Pennsylvania SODA API selecting facility_name, facility_address, facility_address_continued, facility_city, facility_state, facility_zip_code, facility_phone, capacity filtered by facility_city and facility_name.",
+      "notes": "Direct Pennsylvania SODA endpoint and fielded query pattern provided by user."
+    },
+    "RI": {
+      "name": "Rhode Island",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://ridhsrises.my.site.com/ri/s/consumer-search?language=en_US&lang=en",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Rhode Island consumer search portal directly for provider lookups.",
+      "notes": "Direct Rhode Island consumer search URL provided by user and activated for staging."
+    },
+    "SC": {
+      "name": "South Carolina",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://search.sc-ccrr.org/search",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use South Carolina child care search portal directly for provider searches.",
+      "notes": "Direct South Carolina child care search URL provided by user and activated for staging."
+    },
+    "SD": {
+      "name": "South Dakota",
+      "status": "not_verified",
+      "source_type": "federal_state_resource_directory",
+      "portal_url": "https://childcare.gov/state-resources/south-dakota/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "directory",
+      "query_notes": "Use childcare.gov South Dakota state-resources page to reach South Dakota's official child care search/licensing resources.",
+      "notes": "Federal official fallback seeded pending direct South Dakota portal/dataset confirmation."
+    },
+    "TN": {
+      "name": "Tennessee",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://onedhs.tn.gov/csp?id=tn_cc_prv_maps",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Tennessee One DHS child care provider map search.",
+      "notes": "Direct Tennessee child care provider map URL provided by user."
+    },
+    "TX": {
+      "name": "Texas",
+      "status": "verified",
+      "source_type": "open_data_dataset",
+      "portal_url": "https://childcare.hhs.texas.gov/",
+      "dataset_url": "https://data.texas.gov/resource/bc5r-88dy.json",
+      "api_type": "socrata_soql",
+      "query_notes": "Use SoQL against bc5r-88dy selecting operation_name, phone_number, website_address, total_capacity, address_line, city, state, zipcode filtered by operation_name and city.",
+      "notes": "Official Texas open-data dataset verified and already wired into scraper adapter."
+    },
+    "UT": {
+      "name": "Utah",
+      "status": "verified",
+      "source_type": "open_data_dataset",
+      "portal_url": "https://opendata.utah.gov/",
+      "dataset_url": "https://opendata.utah.gov/resource/nbkf-w8sj.json",
+      "api_type": "socrata_json",
+      "query_notes": "Use Utah JSON open-data resource nbkf-w8sj and enumerate/filter the returned provider list for matching provider names and cities.",
+      "notes": "Direct Utah JSON resource provided by user and activated for staging."
+    },
+    "VT": {
+      "name": "Vermont",
+      "status": "verified",
+      "source_type": "open_data_dataset",
+      "portal_url": "https://data.vermont.gov/",
+      "dataset_url": "https://data.vermont.gov/resource/ctdw-tmfz.json",
+      "api_type": "socrata_soql",
+      "query_notes": "Use Vermont SODA API selecting provider_name, address_1, address_2, provider_town, zip_code, phone_number, total_licensed_capacity filtered by provider_name and provider_town.",
+      "notes": "Direct Vermont SODA endpoint and query style provided by user."
+    },
+    "VA": {
+      "name": "Virginia",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://www.dss.virginia.gov/facility/search/cc2.cgi?rm=Search",
+      "dataset_url": "",
+      "api_type": "portal",
+      "query_notes": "Use Virginia DSS child day care search. Detail pages follow cc2.cgi?rm=Details;ID={facility_id}.",
+      "notes": "Direct Virginia child day care search and detail URL pattern verified."
+    },
+    "WA": {
+      "name": "Washington",
+      "status": "verified",
+      "source_type": "open_data_dataset",
+      "portal_url": "https://data.wa.gov/",
+      "dataset_url": "https://data.wa.gov/resource/was8-3ni8.json",
+      "api_type": "socrata_soql",
+      "query_notes": "Use Washington SODA API selecting providername, licensecapacity, startingage, endingage, primarycontactphonenumber, physicalstreetaddress, physicalcity, physicalstate, physicalzip filtered by providername and physicalcity.",
+      "notes": "Direct Washington SODA endpoint and query style provided by user."
+    },
+    "WV": {
+      "name": "West Virginia",
+      "status": "verified",
+      "source_type": "licensing_portal",
+      "portal_url": "https://bfa.wv.gov/page/find-childcare-provider",
+      "dataset_url": "",
+      "api_type": "portal_directory",
+      "query_notes": "Use West Virginia BFA provider finder page to reach the child care provider search workflow.",
+      "notes": "Direct West Virginia child care provider finder URL provided by user and activated for staging."
+    },
+    "WI": {
+      "name": "Wisconsin",
+      "status": "not-found",
+      "source_type": "licensing_portal",
+      "portal_url": "https://www.dhs.wisconsin.gov/guide/provider-search.htm",
+      "dataset_url": "",
+      "api_type": "portal_directory",
+      "query_notes": "Use Wisconsin DHS provider search guidance page to access the regulated provider search tool and generate provider directories.",
+      "notes": "Wisconsin source not reachable for this project."
+    },
+    "WY": {
+      "name": "Wyoming",
+      "status": "blocked",
+      "source_type": "federal_state_resource_directory",
+      "portal_url": "https://childcare.gov/state-resources/wyoming/understanding-and-finding-child-care-resources",
+      "dataset_url": "",
+      "api_type": "directory",
+      "query_notes": "Use childcare.gov Wyoming state-resources page to reach Wyoming's official child care search/licensing resources.",
+      "notes": "Federal official fallback seeded pending direct Wyoming portal/dataset confirmation."
+    }
+  }
+}
