@@ -1,0 +1,4 @@
+beautifulsoup4>=4.12
+requests>=2.31
+selenium>=4.20
+urllib3>=2.0

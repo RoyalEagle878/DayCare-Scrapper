@@ -6,13 +6,7 @@ import unicodedata
 from logging.handlers import RotatingFileHandler
 from typing import Dict, List, Set, Tuple
 
-
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(BASE_DIR, "logs")
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
-
-INPUT_CSV = os.path.join(BASE_DIR, "DaycareBuildings_Input(in).csv")
-OUTPUT_CSV = os.path.join(OUTPUT_DIR, "DaycareBuildings_Cleaned.csv")
+from runtime_env import BASE_DIR, CLEANED_INPUT_CSV as OUTPUT_CSV, INPUT_CSV, LOG_DIR, OUTPUT_DIR
 LOG_FILE = os.path.join(LOG_DIR, "clean_daycare_names.log")
 LOG_MAX_BYTES = 10 * 1024 * 1024
 LOG_BACKUP_COUNT = 3
@@ -183,6 +177,10 @@ CITY_EXACT_EXPANSIONS = {
 }
 
 CITY_TOKEN_EXPANSIONS = {
+    "N": "NORTH",
+    "E": "EAST",
+    "W": "WEST",
+    "S": "SOUTH",
     "FT": "FORT",
     "HTS": "HEIGHTS",
     "TWP": "TOWNSHIP",
@@ -190,6 +188,8 @@ CITY_TOKEN_EXPANSIONS = {
     "SPGS": "SPRINGS",
     "LKS": "LAKES",
 }
+
+CITY_SUFFIX_STRIP_TOKENS = {"TOWNSHIP", "TWP", "VILLAGE", "VLG", "BOROUGH"}
 
 
 def configure_logging() -> logging.Logger:
@@ -257,9 +257,10 @@ def normalize_city_name(city: str) -> str:
     if not normalized_city:
         return ""
     if normalized_city in CITY_EXACT_EXPANSIONS:
-        return CITY_EXACT_EXPANSIONS[normalized_city]
+        normalized_city = CITY_EXACT_EXPANSIONS[normalized_city]
     tokens = normalized_city.split()
     expanded_tokens = [CITY_TOKEN_EXPANSIONS.get(token, token) for token in tokens]
+    expanded_tokens = [token for token in expanded_tokens if token not in CITY_SUFFIX_STRIP_TOKENS]
     return " ".join(expanded_tokens)
 
 

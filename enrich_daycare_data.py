@@ -1,3 +1,5 @@
+import argparse
+import base64
 import csv
 import json
 import logging
@@ -5,6 +7,9 @@ import os
 import random
 import re
 import shutil
+import socket
+import socketserver
+import select
 import threading
 import time
 import tempfile
@@ -32,151 +37,94 @@ from selenium.webdriver.support.ui import WebDriverWait
 from urllib3.util.retry import Retry
 
 import clean_daycare_names as name_cleaner
-from proxy_pool import ProxyPool
-
-ADAPTER_ONLY_TEST_STATES = {"NH"}
-SINGLE_PID_FILTER = "2581751"
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-LOG_DIR = os.path.join(BASE_DIR, "logs")
-OUTPUT_DIR = os.path.join(BASE_DIR, "output")
-CHROME_PROFILE_DIR = os.path.join(BASE_DIR, "chrome_profiles", "google_search")
-
-INPUT_CSV = os.path.join(BASE_DIR, "DaycareBuildings_Input(in).csv")
-CLEANED_INPUT_CSV = os.path.join(OUTPUT_DIR, "DaycareBuildings_Cleaned.csv")
-OUTPUT_CSV = os.path.join(OUTPUT_DIR, "DaycareBuildings_Enriched.csv")
-SAMPLE_OUTPUT_CSV = os.path.join(OUTPUT_DIR, "DaycareBuildings_Enriched_sample50.csv")
-STAGING_OUTPUT_CSV = os.path.join(OUTPUT_DIR, "DaycareBuildings_Enriched_staging.csv")
-CHECKPOINT_FILE = os.path.join(OUTPUT_DIR, "enrichment.json")
-STAGING_DIR = os.path.join(BASE_DIR, "enrichment_staging")
-LEGACY_STAGING_FILE = os.path.join(BASE_DIR, "enrichment_staging.json")
-LEGACY_CHECKPOINT_FILES = (
-    os.path.join(BASE_DIR, "enrichment_checkpoint.json"),
-    os.path.join(OUTPUT_DIR, "enrichment_checkpoint.json"),
+from adapters.registry import ADAPTER_REGISTRY
+from adapters.google import GoogleSearchAdapter
+from adapters.winnie import WinnieFallbackAdapter
+from apis.registry import API_REGISTRY
+from runtime_env import (
+    ADAPTER_ONLY_TEST_STATES,
+    ACCEPT_LANGUAGE_POOL,
+    API_TEST_MAX_WORKERS,
+    BASE_DIR,
+    BING_SEARCH_URL,
+    CALIFORNIA_PROVIDER_SEARCH_API_URL,
+    CHECKPOINT_FILE,
+    CHECKPOINT_SCHEMA_VERSION,
+    CHROME_BINARY_PATH,
+    CHROME_PROFILE_DIR,
+    CLEANED_INPUT_CSV,
+    CSV_CLEANING_ONLY_MODE,
+    DEFAULT_MAX_WORKERS,
+    ENABLE_GOOGLE_FALLBACK_FOR_API_MISSES,
+    ENABLE_TRUSTED_PUBLIC_SEARCH,
+    ENRICHMENT_VALUE_FIELDS,
+    FETCH_RETRIES,
+    FORCE_HEADED,
+    CONNECTICUT_PROVIDER_SEARCH_API_URL,
+    CONTACT_PAGE_LIMIT,
+    GENERIC_OPEN_DATA_API_STATES,
+    GOOGLE_API_MISS_SAMPLE_LIMIT,
+    GOOGLE_CHECKPOINT_FILE,
+    GOOGLE_BAD_PROXY_FILE,
+    GOOGLE_MISS_FILE,
+    GOOGLE_FALLBACK_MAX_CONCURRENT,
+    GOOGLE_HOME_URL,
+    GOOGLE_SEARCH_MIN_DELAY_SECONDS,
+    GOOGLE_SEARCH_RETRIES,
+    GOOGLE_SEARCH_TOTAL_TIMEOUT_SECONDS,
+    GOOGLE_SEARCH_URL,
+    GOOGLE_USE_HEADLESS,
+    GOOGLE_USE_PERSISTENT_PROFILE,
+    HEADER_ACCEPT_POOL,
+    HTTP_MIN_DELAY_SECONDS,
+    INPUT_CSV,
+    LEGACY_CHECKPOINT_FILES,
+    LEGACY_STAGING_FILE,
+    LOG_DIR,
+    LOG_FILE,
+    LOG_BACKUP_COUNT,
+    LOG_MAX_BYTES,
+    OUTPUT_CSV,
+    OUTPUT_DIR,
+    OUTPUT_HEADERS,
+    PORTAL_VALIDATION_ALL_ROWS_STATES,
+    PORTAL_VALIDATION_SAMPLE_ONLY,
+    PORTAL_VALIDATION_SAMPLE_STATES,
+    RATE_LIMIT_COOLDOWN_SECONDS,
+    REQUEST_TIMEOUT,
+    ROTATING_BROWSER_PROXY_ENABLED,
+    ROTATING_BROWSER_PROXIES,
+    ROTATING_BROWSER_BAD_PROXY_HOSTS,
+    ROTATING_BROWSER_PROXY_SCHEME,
+    RETRY_BACKOFF_SECONDS,
+    RUN_API_STATE_TEST_MODE,
+    RUN_GOOGLE_ONLY_SAMPLE_MODE,
+    RUN_VALIDATION_SAMPLE,
+    SAMPLE_OUTPUT_CSV,
+    SEARCH_ENGINE_URL,
+    SEARCH_MIN_DELAY_SECONDS,
+    SEARCH_RESULTS_LIMIT,
+    SEARCH_RETRIES,
+    SELENIUM_PAGELOAD_TIMEOUT,
+    SELENIUM_WAIT_TIMEOUT,
+    SINGLE_PID_FILTER,
+    STATE_BATCH_MAX_WORKERS,
+    STATE_PORTAL_URLS,
+    STATE_SCRAPER_MODELS_FILE,
+    STAGING_DIR,
+    STAGING_OUTPUT_CSV,
+    TEXAS_PROVIDER_DETAIL_URL_TEMPLATE,
+    TEXAS_PROVIDER_SEARCH_API_URL,
+    USE_STATE_PORTAL_ADAPTERS_ONLY,
+    USER_AGENT,
+    USER_AGENT_POOL,
+    VALIDATION_RANDOM_SEED,
+    VALIDATION_SAMPLE_SIZE,
+    VALIDATION_STATE_FILTER,
+    YAHOO_SEARCH_URL,
+    CONTACT_PAGE_LIMIT,
+    CONNECTICUT_PROVIDER_SEARCH_API_URL,
 )
-LOG_FILE = os.path.join(LOG_DIR, "enrichment.log")
-STATE_SCRAPER_MODELS_FILE = os.path.join(BASE_DIR, "state_scraper_models.json")
-SEARCH_ENGINE_URL = "https://search.brave.com/search"
-GOOGLE_SEARCH_URL = "https://www.google.com/search"
-BING_SEARCH_URL = "https://www.bing.com/search"
-YAHOO_SEARCH_URL = "https://search.yahoo.com/search"
-CHECKPOINT_SCHEMA_VERSION = 3
-RUN_VALIDATION_SAMPLE = False
-VALIDATION_SAMPLE_SIZE = 100
-VALIDATION_RANDOM_SEED = 42
-VALIDATION_STATE_FILTER = ""
-PORTAL_VALIDATION_SAMPLE_ONLY = False
-PORTAL_VALIDATION_SAMPLE_STATES = {"IL", "VA"}
-PORTAL_VALIDATION_ALL_ROWS_STATES = set()
-RUN_MODEL_STATE_STAGING = False
-MODEL_STATE_SAMPLE_MIN = 2
-MODEL_STATE_SAMPLE_MAX = 3
-USE_STATE_PORTAL_ADAPTERS_ONLY = True
-CSV_CLEANING_ONLY_MODE = False
-RUN_API_STATE_TEST_MODE = False
-RUN_GOOGLE_ONLY_SAMPLE_MODE = False
-ENABLE_GOOGLE_FALLBACK_FOR_API_MISSES = False
-GOOGLE_API_MISS_SAMPLE_LIMIT = 100
-GOOGLE_SEARCH_RETRIES = 1
-
-OUTPUT_HEADERS = [
-    "PID",
-    "DayCareType",
-    "Daycare_Name",
-    "Original_Name",
-    "Normalized_Name",
-    "Search_Name_Primary",
-    "Search_Name_Variants",
-    "Mailing_City",
-    "Mailing_State",
-    "Mailing_Address",
-    "Mailing_Zip",
-    "Telephone",
-    "URL",
-    "Capacity (optional)",
-    "Age Range (optional)",
-    "Match_Status",
-    "Match_Confidence",
-    "Matched_Provider_Name",
-    "Matched_Reason",
-]
-
-ENRICHMENT_VALUE_FIELDS = [
-    "Mailing_Address",
-    "Mailing_Zip",
-    "Telephone",
-    "URL",
-    "Capacity (optional)",
-    "Age Range (optional)",
-]
-
-USER_AGENT_POOL = [
-    (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/124.0.0.0 Safari/537.36"
-    ),
-    (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
-    ),
-    (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/126.0.0.0 Safari/537.36"
-    ),
-    (
-        "Mozilla/5.0 (X11; Linux x86_64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/125.0.0.0 Safari/537.36"
-    ),
-]
-USER_AGENT = USER_AGENT_POOL[0]
-ACCEPT_LANGUAGE_POOL = ["en-US,en;q=0.9", "en-US,en;q=0.8", "en-GB,en-US;q=0.9,en;q=0.8"]
-HEADER_ACCEPT_POOL = [
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
-    "text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8",
-]
-
-REQUEST_TIMEOUT = 25
-DEFAULT_MAX_WORKERS = 1
-API_TEST_MAX_WORKERS = 8
-SEARCH_RESULTS_LIMIT = 8
-CONTACT_PAGE_LIMIT = 2
-LOG_MAX_BYTES = 10 * 1024 * 1024
-LOG_BACKUP_COUNT = 3
-SEARCH_RETRIES = 4
-FETCH_RETRIES = 3
-RETRY_BACKOFF_SECONDS = 3.0
-SEARCH_MIN_DELAY_SECONDS = 6.0
-HTTP_MIN_DELAY_SECONDS = 0.0
-ENABLE_TRUSTED_PUBLIC_SEARCH = True
-RATE_LIMIT_COOLDOWN_SECONDS = 90
-SELENIUM_PAGELOAD_TIMEOUT = 45
-SELENIUM_WAIT_TIMEOUT = 20
-CHROME_BINARY_PATH = r"C:\Program Files\Google\Chrome\Application\chrome.exe"
-GOOGLE_FALLBACK_MAX_CONCURRENT = 1
-GOOGLE_USE_PERSISTENT_PROFILE = False
-GOOGLE_USE_HEADLESS = True
-GOOGLE_HOME_URL = "https://www.google.com/"
-GOOGLE_SEARCH_MIN_DELAY_SECONDS = 0.75
-GOOGLE_SEARCH_TOTAL_TIMEOUT_SECONDS = 5.0
-ENABLE_PROXY_POOL = False
-PROXY_LIST_CSV = r"C:\Users\deepa\Downloads\Free_Proxy_List.csv"
-VALIDATED_PROXY_JSON = os.path.join(OUTPUT_DIR, "validated_proxies.json")
-
-STATE_PORTAL_URLS = {
-    "TX": "https://childcare.hhs.texas.gov",
-    "CA": "https://mychildcareplan.org/provider-search/",
-    "NY": "https://ocfs.ny.gov/programs/childcare/looking/",
-    "FL": "https://caressearch.myflfamilies.com/PublicSearch",
-    "MA": "https://childcare.mass.gov/findchildcare",
-}
-GENERIC_OPEN_DATA_API_STATES = {"CO", "DE", "PA", "UT", "WA"}
-TEXAS_PROVIDER_SEARCH_API_URL = "https://data.texas.gov/resource/bc5r-88dy.json"
-TEXAS_PROVIDER_DETAIL_URL_TEMPLATE = "https://childcare.hhs.texas.gov/Public/Operation?operationId={provider_id}"
-CALIFORNIA_PROVIDER_SEARCH_API_URL = "https://data.ca.gov/api/3/action/datastore_search_sql"
-CONNECTICUT_PROVIDER_SEARCH_API_URL = "https://data.ct.gov/resource/h8mr-dn95.json"
 
 BLACKLISTED_OFFICIAL_DOMAINS = {
     "facebook.com",
@@ -433,6 +381,165 @@ def configure_logging() -> logging.Logger:
 
 
 LOGGER = configure_logging()
+RUN_GOOGLE_QUERY_MODE = False
+ROTATING_BROWSER_PROXY_LOCK = threading.Lock()
+
+
+class AuthenticatedProxyBridgeServer(socketserver.ThreadingTCPServer):
+    allow_reuse_address = True
+    daemon_threads = True
+
+
+class AuthenticatedProxyBridgeHandler(socketserver.BaseRequestHandler):
+    def _recv_until_headers(self) -> bytes:
+        data = b""
+        self.request.settimeout(20)
+        while b"\r\n\r\n" not in data and len(data) < 65536:
+            chunk = self.request.recv(8192)
+            if not chunk:
+                break
+            data += chunk
+        return data
+
+    def _open_upstream(self) -> socket.socket:
+        upstream = socket.create_connection((self.server.upstream_host, self.server.upstream_port), timeout=20)
+        upstream.settimeout(20)
+        return upstream
+
+    def _proxy_authorization_header(self) -> str:
+        token = base64.b64encode(f"{self.server.username}:{self.server.password}".encode("utf-8")).decode("ascii")
+        return f"Proxy-Authorization: Basic {token}\r\n"
+
+    def _tunnel(self, left: socket.socket, right: socket.socket) -> None:
+        sockets = [left, right]
+        while True:
+            readable, _, exceptional = select.select(sockets, [], sockets, 30)
+            if exceptional:
+                break
+            if not readable:
+                break
+            for current in readable:
+                try:
+                    payload = current.recv(8192)
+                except Exception:
+                    return
+                if not payload:
+                    return
+                target = right if current is left else left
+                try:
+                    target.sendall(payload)
+                except Exception:
+                    return
+
+    def handle(self) -> None:
+        upstream = None
+        try:
+            initial = self._recv_until_headers()
+            if not initial:
+                return
+            header_blob, _, remainder = initial.partition(b"\r\n\r\n")
+            header_text = header_blob.decode("iso-8859-1", errors="replace")
+            lines = header_text.split("\r\n")
+            if not lines:
+                return
+            request_line = lines[0]
+            parts = request_line.split(" ", 2)
+            if len(parts) < 3:
+                return
+            method, target, version = parts
+            upstream = self._open_upstream()
+            auth_header = self._proxy_authorization_header()
+            if method.upper() == "CONNECT":
+                connect_request = f"CONNECT {target} {version}\r\nHost: {target}\r\n{auth_header}\r\n".encode("iso-8859-1")
+                upstream.sendall(connect_request)
+                response = b""
+                while b"\r\n\r\n" not in response and len(response) < 65536:
+                    chunk = upstream.recv(8192)
+                    if not chunk:
+                        break
+                    response += chunk
+                status_line = response.split(b"\r\n", 1)[0]
+                if b" 200" not in status_line:
+                    self.request.sendall(b"HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+                    return
+                self.request.sendall(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+                if remainder:
+                    upstream.sendall(remainder)
+                self._tunnel(self.request, upstream)
+                return
+
+            forward_lines = [request_line]
+            saw_proxy_auth = False
+            for line in lines[1:]:
+                if not line:
+                    continue
+                lower = line.lower()
+                if lower.startswith("proxy-authorization:"):
+                    saw_proxy_auth = True
+                forward_lines.append(line)
+            if not saw_proxy_auth:
+                forward_lines.append(auth_header.strip())
+            forward_request = ("\r\n".join(forward_lines) + "\r\n\r\n").encode("iso-8859-1") + remainder
+            upstream.sendall(forward_request)
+            self._tunnel(self.request, upstream)
+        except Exception:
+            return
+        finally:
+            try:
+                if upstream:
+                    upstream.close()
+            except Exception:
+                pass
+
+
+class AuthenticatedProxyBridge:
+    def __init__(self, upstream_host: str, upstream_port: int, username: str, password: str) -> None:
+        self.server = AuthenticatedProxyBridgeServer(("127.0.0.1", 0), AuthenticatedProxyBridgeHandler)
+        self.server.upstream_host = upstream_host
+        self.server.upstream_port = int(upstream_port)
+        self.server.username = username
+        self.server.password = password
+        self.thread = threading.Thread(target=self.server.serve_forever, daemon=True)
+        self.thread.start()
+
+    @property
+    def host(self) -> str:
+        return "127.0.0.1"
+
+    @property
+    def port(self) -> int:
+        return int(self.server.server_address[1])
+
+    def close(self) -> None:
+        try:
+            self.server.shutdown()
+        except Exception:
+            pass
+        try:
+            self.server.server_close()
+        except Exception:
+            pass
+
+
+def load_checkpoint_file(path: str) -> Dict[str, Dict[str, object]]:
+    if not path or not os.path.exists(path):
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+        if (
+            isinstance(data, dict)
+            and data.get("_meta", {}).get("schema_version") == CHECKPOINT_SCHEMA_VERSION
+            and isinstance(data.get("rows"), dict)
+        ):
+            return {
+                pid: payload
+                for pid, payload in data["rows"].items()
+                if isinstance(payload, dict) and isinstance(payload.get("row"), dict)
+            }
+    except Exception:
+        LOGGER.exception("Failed to load checkpoint file from %s", path)
+    return {}
 
 
 def normalize_space(value: Optional[str]) -> str:
@@ -1136,7 +1243,7 @@ GENERIC_AGE_FIELDS = [
 
 
 class RateLimitedSession:
-    def __init__(self, min_delay_seconds: float = 1.0, proxy_pool: Optional[ProxyPool] = None) -> None:
+    def __init__(self, min_delay_seconds: float = 1.0) -> None:
         self.session = requests.Session()
         self.session.headers.update(build_random_request_headers())
         retry_total = 0 if RUN_GOOGLE_ONLY_SAMPLE_MODE else 2
@@ -1156,10 +1263,7 @@ class RateLimitedSession:
         self.min_delay_seconds = min_delay_seconds
         self.lock = threading.Lock()
         self.last_request_time = 0.0
-        self.proxy_pool = proxy_pool
-
     def request(self, method: str, url: str, **kwargs) -> requests.Response:
-        proxy = None
         with self.lock:
             elapsed = time.time() - self.last_request_time
             if elapsed < self.min_delay_seconds:
@@ -1168,20 +1272,8 @@ class RateLimitedSession:
             if isinstance(kwargs.get("headers"), dict):
                 merged_headers.update(kwargs["headers"])
             kwargs["headers"] = merged_headers
-            if self.proxy_pool and not kwargs.get("proxies"):
-                proxy = self.proxy_pool.get_next_proxy()
-                if proxy:
-                    kwargs["proxies"] = proxy.to_requests_proxies()
-                    LOGGER.info("Routing %s request to %s through proxy=%s", method.upper(), url, proxy.key)
-            try:
-                response = self.session.request(method=method.upper(), url=url, timeout=REQUEST_TIMEOUT, **kwargs)
-                self.last_request_time = time.time()
-                if proxy:
-                    self.proxy_pool.mark_success(proxy.key)
-            except Exception as exc:
-                if proxy:
-                    self.proxy_pool.mark_failure(proxy.key, str(exc))
-                raise
+            response = self.session.request(method=method.upper(), url=url, timeout=REQUEST_TIMEOUT, **kwargs)
+            self.last_request_time = time.time()
         response.raise_for_status()
         return response
 
@@ -1193,9 +1285,9 @@ class RateLimitedSession:
 
 
 class DaycareEnricher:
-    def __init__(self) -> None:
-        self.proxy_pool = self.load_proxy_pool()
-        self.session = RateLimitedSession(min_delay_seconds=HTTP_MIN_DELAY_SECONDS, proxy_pool=self.proxy_pool)
+    def __init__(self, checkpoint_file_override: Optional[str] = None) -> None:
+        self.session = RateLimitedSession(min_delay_seconds=HTTP_MIN_DELAY_SECONDS)
+        self.checkpoint_file = checkpoint_file_override or CHECKPOINT_FILE
         self.checkpoint_lock = threading.Lock()
         self.search_lock = threading.Lock()
         self.last_search_time = 0.0
@@ -1203,7 +1295,6 @@ class DaycareEnricher:
         self.google_fallback_attempts = 0
         self.google_fallback_semaphore = threading.Semaphore(GOOGLE_FALLBACK_MAX_CONCURRENT)
         self.state_scraper_models = load_state_scraper_models()
-        self.texas_api_token = clean_text(os.getenv("TEXAS_API_BEARER_TOKEN"))
         self.driver_local = threading.local()
         self.driver_lock = threading.Lock()
         self.driver_registry: List[webdriver.Chrome] = []
@@ -1211,41 +1302,185 @@ class DaycareEnricher:
         self.state_portal_base_handles: Dict[str, str] = {}
         self.state_portal_query_handles: Dict[str, str] = {}
         self.state_portal_session_flags: Dict[str, Dict[str, object]] = {}
+        self.state_portal_run_locks: Dict[str, threading.Lock] = {}
+        self.api_retry_lock = threading.Lock()
+        self.pending_api_city_only_retries: Dict[str, Dict[str, Dict[str, Dict[str, str]]]] = {}
+        self.api_city_only_retry_active_states: set[str] = set()
+        self.adapter_timeout_retry_lock = threading.Lock()
+        self.pending_adapter_timeout_retries: Dict[str, Dict[str, Dict[str, str]]] = {}
+        self.winnie_retry_lock = threading.Lock()
+        self.winnie_run_lock = threading.Lock()
+        self.pending_winnie_retries: Dict[str, Dict[str, Dict[str, Dict[str, str]]]] = {}
+        self.winnie_backoff_lock = threading.Lock()
+        self.winnie_backoff_seconds: Dict[str, float] = {}
+        self.google_backoff_lock = threading.Lock()
+        self.google_backoff_seconds: Dict[str, float] = {}
+        self.google_retry_lock = threading.Lock()
+        self.pending_google_antibot_retries: Dict[str, Dict[str, str]] = {}
+        self.google_miss_lock = threading.Lock()
+        self.google_miss_pids = self.load_google_miss_registry()
+        self.browser_proxy_queue_lock = threading.Lock()
+        self.good_browser_proxy_queue: List[str] = []
+        self.bad_browser_proxy_queue: List[str] = []
         self.temp_profile_dirs: List[str] = []
+        self.proxy_bridges: List[AuthenticatedProxyBridge] = []
         self.staging_lock = threading.Lock()
         self.checkpoint = self.load_checkpoint()
-        self.staging = self.load_staging()
+        self.staging = self.checkpoint
+        self.initialize_browser_proxy_queues()
         LOGGER.info(
-            "DaycareEnricher initialized with %s checkpoint rows, %s staging rows, %s state scraper models and proxy_pool=%s",
+            "DaycareEnricher initialized with %s checkpoint rows, %s staging rows, %s state scraper models",
             len(self.checkpoint),
             len(self.staging),
             len(self.state_scraper_models),
-            bool(self.proxy_pool),
         )
 
-    def load_proxy_pool(self) -> Optional[ProxyPool]:
-        if not ENABLE_PROXY_POOL:
-            LOGGER.info("Proxy pool disabled")
-            return None
+    def initialize_browser_proxy_queues(self) -> None:
+        proxies = [clean_text(item) for item in ROTATING_BROWSER_PROXIES if clean_text(item)]
+        bad_hosts = [clean_text(item) for item in ROTATING_BROWSER_BAD_PROXY_HOSTS if clean_text(item)]
+        if os.path.exists(GOOGLE_BAD_PROXY_FILE):
+            try:
+                with open(GOOGLE_BAD_PROXY_FILE, "r", encoding="utf-8") as handle:
+                    raw_value = handle.read().strip()
+                persisted_hosts = json.loads(raw_value) if raw_value else []
+                if isinstance(persisted_hosts, list):
+                    bad_hosts.extend(clean_text(item) for item in persisted_hosts if clean_text(item))
+            except Exception:
+                LOGGER.warning("Ignoring invalid Google bad proxy file at %s", GOOGLE_BAD_PROXY_FILE)
+        bad_queue: List[str] = []
+        used_bad_hosts: List[str] = []
+        for host in bad_hosts:
+            matched = next((entry for entry in proxies if clean_text(entry.split(":")[0]) == host), "")
+            if matched:
+                bad_queue.append(matched)
+                used_bad_hosts.append(host)
+        bad_host_set = set(used_bad_hosts)
+        good_queue = [entry for entry in proxies if clean_text(entry.split(":")[0]) not in bad_host_set]
+        with self.browser_proxy_queue_lock:
+            self.good_browser_proxy_queue = good_queue
+            self.bad_browser_proxy_queue = bad_queue
+
+    def save_bad_browser_proxy_hosts(self) -> None:
+        with self.browser_proxy_queue_lock:
+            hosts = []
+            for entry in self.bad_browser_proxy_queue:
+                parts = clean_text(entry).split(":")
+                if len(parts) == 4 and clean_text(parts[0]):
+                    hosts.append(clean_text(parts[0]))
+        deduped_hosts = []
+        seen = set()
+        for host in hosts:
+            if host in seen:
+                continue
+            seen.add(host)
+            deduped_hosts.append(host)
         try:
-            if os.path.exists(VALIDATED_PROXY_JSON):
-                pool = ProxyPool.from_validated_json(VALIDATED_PROXY_JSON)
-                LOGGER.info("Loaded validated proxy pool from %s stats=%s", VALIDATED_PROXY_JSON, pool.stats())
-                return pool
-            if os.path.exists(PROXY_LIST_CSV):
-                pool = ProxyPool.from_csv(
-                    PROXY_LIST_CSV,
-                    allowed_protocols=["http", "https"],
-                    allowed_anonymity=["elite", "anonymous"],
-                    min_uptime=90,
-                    max_latency=5000,
-                    http_only_for_requests=True,
-                )
-                LOGGER.info("Loaded raw proxy pool from %s stats=%s", PROXY_LIST_CSV, pool.stats())
-                return pool
+            with open(GOOGLE_BAD_PROXY_FILE, "w", encoding="utf-8") as handle:
+                json.dump(deduped_hosts, handle, indent=2)
         except Exception:
-            LOGGER.exception("Failed loading proxy pool")
-        return None
+            LOGGER.exception("Failed saving Google bad proxy file to %s", GOOGLE_BAD_PROXY_FILE)
+
+    def load_google_miss_registry(self) -> set:
+        if not os.path.exists(GOOGLE_MISS_FILE):
+            return set()
+        try:
+            with open(GOOGLE_MISS_FILE, "r", encoding="utf-8") as handle:
+                raw_value = handle.read().strip()
+            if not raw_value:
+                return set()
+            payload = json.loads(raw_value)
+            if isinstance(payload, list):
+                return {clean_text(item) for item in payload if clean_text(item)}
+        except Exception:
+            LOGGER.warning("Ignoring invalid Google miss file at %s", GOOGLE_MISS_FILE)
+        return set()
+
+    def save_google_miss_registry(self) -> None:
+        with self.google_miss_lock:
+            payload = sorted(pid for pid in self.google_miss_pids if clean_text(pid))
+        try:
+            with open(GOOGLE_MISS_FILE, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2)
+        except Exception:
+            LOGGER.exception("Failed saving Google miss file to %s", GOOGLE_MISS_FILE)
+
+    def is_google_miss(self, pid: str) -> bool:
+        pid = clean_text(pid)
+        if not pid:
+            return False
+        with self.google_miss_lock:
+            return pid in self.google_miss_pids
+
+    def mark_google_miss(self, pid: str) -> None:
+        pid = clean_text(pid)
+        if not pid:
+            return
+        with self.google_miss_lock:
+            self.google_miss_pids.add(pid)
+        self.save_google_miss_registry()
+
+    def clear_google_miss(self, pid: str) -> None:
+        pid = clean_text(pid)
+        if not pid:
+            return
+        removed = False
+        with self.google_miss_lock:
+            if pid in self.google_miss_pids:
+                self.google_miss_pids.remove(pid)
+                removed = True
+        if removed:
+            self.save_google_miss_registry()
+
+    def clear_bad_browser_proxy_hosts(self, hosts_to_clear: List[str]) -> None:
+        targets = {clean_text(host) for host in hosts_to_clear if clean_text(host)}
+        if not targets:
+            return
+        with self.browser_proxy_queue_lock:
+            self.bad_browser_proxy_queue = [
+                entry
+                for entry in self.bad_browser_proxy_queue
+                if clean_text(entry).split(":")[0] not in targets
+            ]
+        self.save_bad_browser_proxy_hosts()
+
+    def pop_next_browser_proxy_entry(self) -> str:
+        with self.browser_proxy_queue_lock:
+            if not self.good_browser_proxy_queue and self.bad_browser_proxy_queue:
+                self.good_browser_proxy_queue = list(self.bad_browser_proxy_queue)
+                self.bad_browser_proxy_queue = []
+                LOGGER.info("Browser proxy queue recycled; promoted bad queue into good queue")
+            if not self.good_browser_proxy_queue:
+                return ""
+            return self.good_browser_proxy_queue.pop(0)
+
+    def queue_bad_browser_proxy_entry(self, proxy_entry: str) -> None:
+        proxy_entry = clean_text(proxy_entry)
+        if not proxy_entry:
+            return
+        with self.browser_proxy_queue_lock:
+            self.bad_browser_proxy_queue.append(proxy_entry)
+        self.save_bad_browser_proxy_hosts()
+
+    def queue_active_google_proxies_as_bad(self) -> None:
+        current_entry = clean_text(getattr(self.driver_local, "current_browser_proxy_entry", ""))
+        previous_entry = clean_text(getattr(self.driver_local, "last_browser_proxy_entry", ""))
+        if current_entry:
+            self.queue_bad_browser_proxy_entry(current_entry)
+        if previous_entry:
+            self.queue_bad_browser_proxy_entry(previous_entry)
+
+    def queue_google_antibot_retry(self, record: Dict[str, str]) -> None:
+        pid = clean_text(record.get("PID"))
+        if not pid:
+            return
+        with self.google_retry_lock:
+            self.pending_google_antibot_retries[pid] = dict(record)
+
+    def pop_google_antibot_retries(self) -> Dict[str, Dict[str, str]]:
+        with self.google_retry_lock:
+            retries = dict(self.pending_google_antibot_retries)
+            self.pending_google_antibot_retries.clear()
+            return retries
 
     def get_browser_profile(self) -> Dict[str, str]:
         profile = getattr(self.driver_local, "browser_profile", None)
@@ -1255,14 +1490,143 @@ class DaycareEnricher:
         self.driver_local.browser_profile = profile
         return profile
 
+    def get_rotating_browser_proxy(self) -> Optional[Dict[str, object]]:
+        if not ROTATING_BROWSER_PROXY_ENABLED:
+            return None
+        with ROTATING_BROWSER_PROXY_LOCK:
+            proxy_entry = self.pop_next_browser_proxy_entry()
+        if not proxy_entry:
+            return None
+        parts = proxy_entry.split(":")
+        if len(parts) != 4:
+            LOGGER.warning("Skipping invalid rotating browser proxy entry=%s", proxy_entry)
+            return None
+        host, port, username, password = parts
+        previous_entry = clean_text(getattr(self.driver_local, "current_browser_proxy_entry", ""))
+        if previous_entry:
+            self.driver_local.last_browser_proxy_entry = previous_entry
+        self.driver_local.current_browser_proxy_entry = proxy_entry
+        return {
+            "scheme": clean_text(ROTATING_BROWSER_PROXY_SCHEME) or "http",
+            "host": clean_text(host),
+            "port": int(clean_text(port) or "0"),
+            "username": clean_text(username),
+            "password": clean_text(password),
+        }
+
+    def create_proxy_auth_extension_dir(self, proxy_config: Dict[str, object], purpose: str) -> str:
+        extension_dir = tempfile.mkdtemp(prefix=f"{purpose}_proxy_", dir=os.path.join(BASE_DIR, "chrome_profiles"))
+        self.temp_profile_dirs.append(extension_dir)
+        manifest = {
+            "version": "1.0.0",
+            "manifest_version": 3,
+            "name": f"{purpose.title()} Proxy Auth",
+            "permissions": [
+                "proxy",
+                "storage",
+                "webRequest",
+                "webRequestAuthProvider",
+            ],
+            "host_permissions": ["<all_urls>"],
+            "background": {"service_worker": "background.js"},
+        }
+        background_js = f"""
+const config = {{
+  mode: "fixed_servers",
+  rules: {{
+    singleProxy: {{
+      scheme: "{proxy_config['scheme']}",
+      host: "{proxy_config['host']}",
+      port: {int(proxy_config['port'])}
+    }},
+    bypassList: ["localhost", "127.0.0.1"]
+  }}
+}};
+
+chrome.runtime.onInstalled.addListener(() => {{
+  chrome.proxy.settings.set({{ value: config, scope: "regular" }});
+}});
+
+chrome.runtime.onStartup.addListener(() => {{
+  chrome.proxy.settings.set({{ value: config, scope: "regular" }});
+}});
+
+chrome.webRequest.onAuthRequired.addListener(
+  () => {{
+    return {{
+      authCredentials: {{
+        username: "{proxy_config['username']}",
+        password: "{proxy_config['password']}"
+      }}
+    }};
+  }},
+  {{ urls: ["<all_urls>"] }},
+  ["blocking"]
+);
+""".strip()
+        with open(os.path.join(extension_dir, "manifest.json"), "w", encoding="utf-8") as handle:
+            json.dump(manifest, handle, indent=2)
+        with open(os.path.join(extension_dir, "background.js"), "w", encoding="utf-8") as handle:
+            handle.write(background_js)
+        return extension_dir
+
+    def create_proxy_bridge(self, proxy_config: Dict[str, object]) -> AuthenticatedProxyBridge:
+        bridge = AuthenticatedProxyBridge(
+            upstream_host=str(proxy_config["host"]),
+            upstream_port=int(proxy_config["port"]),
+            username=str(proxy_config["username"]),
+            password=str(proxy_config["password"]),
+        )
+        self.proxy_bridges.append(bridge)
+        return bridge
+
+    def apply_browser_proxy_options(self, options: ChromeOptions, purpose: str, state: str = "") -> bool:
+        proxy_config = self.get_rotating_browser_proxy()
+        if not proxy_config:
+            return False
+        purpose_key = clean_text(purpose).lower()
+        state_key = clean_text(state).upper()
+        if purpose_key == "portal":
+            return False
+        bridge = self.create_proxy_bridge(proxy_config)
+        options.add_argument(f"--proxy-server=http://{bridge.host}:{bridge.port}")
+        LOGGER.info(
+            "Applied rotating browser proxy for purpose=%s state=%s upstream=%s:%s local=%s:%s",
+            purpose,
+            state,
+            proxy_config["host"],
+            proxy_config["port"],
+            bridge.host,
+            bridge.port,
+        )
+        return True
+
+    def log_browser_ip(self, driver: webdriver.Chrome, purpose: str, state: str = "") -> None:
+        try:
+            driver.get("https://api.ipify.org?format=json")
+            WebDriverWait(driver, 10).until(
+                lambda d: "ip" in clean_text(d.find_element(By.TAG_NAME, "body").text)
+            )
+            body_text = clean_text(driver.find_element(By.TAG_NAME, "body").text)
+            match = re.search(r'"ip"\s*:\s*"([^"]+)"', body_text)
+            ip_value = clean_text(match.group(1)) if match else body_text
+            LOGGER.info("Browser window IP purpose=%s state=%s ip=%s", purpose, state, ip_value)
+            driver.get("about:blank")
+        except Exception:
+            LOGGER.exception("Failed to log browser IP for purpose=%s state=%s", purpose, state)
+
     def load_checkpoint(self) -> Dict[str, Dict[str, str]]:
-        checkpoint_path = CHECKPOINT_FILE
+        checkpoint_path = self.checkpoint_file
         if not os.path.exists(checkpoint_path):
-            for legacy_path in LEGACY_CHECKPOINT_FILES:
-                if os.path.exists(legacy_path):
-                    checkpoint_path = legacy_path
-                    LOGGER.info("Primary checkpoint missing; loading legacy checkpoint from %s", legacy_path)
-                    break
+            if checkpoint_path == CHECKPOINT_FILE:
+                for legacy_path in LEGACY_CHECKPOINT_FILES:
+                    if os.path.exists(legacy_path):
+                        checkpoint_path = legacy_path
+                        LOGGER.info("Primary checkpoint missing; loading legacy checkpoint from %s", legacy_path)
+                        break
+                else:
+                    LOGGER.info("No checkpoint file found at startup")
+                    return {}
             else:
                 LOGGER.info("No checkpoint file found at startup")
                 return {}
@@ -1297,58 +1661,8 @@ class DaycareEnricher:
             return {}
 
     def load_staging(self) -> Dict[str, Dict[str, str]]:
-        rows: Dict[str, Dict[str, str]] = {}
-        if os.path.isdir(STAGING_DIR):
-            for entry in sorted(os.listdir(STAGING_DIR)):
-                if not entry.lower().endswith(".json"):
-                    continue
-                path = os.path.join(STAGING_DIR, entry)
-                LOGGER.debug("Loading staging shard from %s", path)
-                try:
-                    with open(path, "r", encoding="utf-8") as handle:
-                        data = json.load(handle)
-                    if (
-                        isinstance(data, dict)
-                        and data.get("_meta", {}).get("schema_version") == CHECKPOINT_SCHEMA_VERSION
-                        and isinstance(data.get("rows"), dict)
-                    ):
-                        for pid, payload in data["rows"].items():
-                            if (
-                                isinstance(payload, dict)
-                                and isinstance(payload.get("row"), dict)
-                                and has_fetched_enrichment(payload.get("row", {}), payload.get("sources", {}))
-                            ):
-                                rows[pid] = payload
-                    else:
-                        LOGGER.warning("Ignoring staging shard with unexpected schema: %s", path)
-                except Exception:
-                    LOGGER.exception("Failed loading staging shard %s", path)
-        elif os.path.exists(LEGACY_STAGING_FILE):
-            LOGGER.debug("Loading legacy staging file from %s", LEGACY_STAGING_FILE)
-            try:
-                with open(LEGACY_STAGING_FILE, "r", encoding="utf-8") as handle:
-                    data = json.load(handle)
-                if (
-                    isinstance(data, dict)
-                    and data.get("_meta", {}).get("schema_version") == CHECKPOINT_SCHEMA_VERSION
-                    and isinstance(data.get("rows"), dict)
-                ):
-                    rows = {
-                        pid: payload
-                        for pid, payload in data["rows"].items()
-                        if isinstance(payload, dict)
-                        and isinstance(payload.get("row"), dict)
-                        and has_fetched_enrichment(payload.get("row", {}), payload.get("sources", {}))
-                    }
-                else:
-                    LOGGER.warning("Legacy staging file did not contain the expected schema; ignoring it")
-            except Exception:
-                LOGGER.exception("Failed to load legacy staging; starting with empty staging state")
-        else:
-            LOGGER.info("No staging directory found at startup")
-            return {}
-        LOGGER.info("Loaded staging with %s rows across %s shard files", len(rows), len(os.listdir(STAGING_DIR)) if os.path.isdir(STAGING_DIR) else (1 if rows else 0))
-        return rows
+        LOGGER.info("Staging cache is unified with checkpoint file at %s", self.checkpoint_file)
+        return self.load_checkpoint()
 
     def save_checkpoint(self) -> None:
         with self.checkpoint_lock:
@@ -1359,7 +1673,8 @@ class DaycareEnricher:
                 and isinstance(payload.get("row"), dict)
                 and has_fetched_enrichment(payload.get("row", {}), payload.get("sources", {}))
             }
-            temp_path = f"{CHECKPOINT_FILE}.tmp"
+            checkpoint_path = self.checkpoint_file
+            temp_path = f"{checkpoint_path}.tmp"
             LOGGER.debug("Saving checkpoint with %s rows to %s", len(snapshot), temp_path)
             with open(temp_path, "w", encoding="utf-8") as handle:
                 json.dump(
@@ -1368,59 +1683,12 @@ class DaycareEnricher:
                     ensure_ascii=False,
                     indent=2,
                 )
-            os.replace(temp_path, CHECKPOINT_FILE)
+            os.replace(temp_path, checkpoint_path)
             LOGGER.info("Checkpoint saved with %s rows", len(snapshot))
 
     def save_staging(self) -> None:
-        with self.staging_lock:
-            os.makedirs(STAGING_DIR, exist_ok=True)
-            shard_snapshots: Dict[str, Dict[str, Dict[str, str]]] = {}
-            for pid, payload in self.staging.items():
-                if not (
-                    isinstance(payload, dict)
-                    and isinstance(payload.get("row"), dict)
-                    and has_fetched_enrichment(payload.get("row", {}), payload.get("sources", {}))
-                ):
-                    continue
-                state = clean_text(payload.get("row", {}).get("Mailing_State")).upper() or "UNKNOWN"
-                shard_snapshots.setdefault(state, {})[pid] = dict(payload)
-
-            existing_files = {
-                entry
-                for entry in os.listdir(STAGING_DIR)
-                if entry.lower().endswith(".json")
-            } if os.path.isdir(STAGING_DIR) else set()
-            target_files = {f"{state}.json" for state in shard_snapshots}
-
-            for state, snapshot in shard_snapshots.items():
-                path = os.path.join(STAGING_DIR, f"{state}.json")
-                temp_path = f"{path}.tmp"
-                LOGGER.debug("Saving staging shard state=%s rows=%s to %s", state, len(snapshot), temp_path)
-                with open(temp_path, "w", encoding="utf-8") as handle:
-                    json.dump(
-                        {"_meta": {"schema_version": CHECKPOINT_SCHEMA_VERSION, "state": state}, "rows": snapshot},
-                        handle,
-                        ensure_ascii=False,
-                        indent=2,
-                    )
-                os.replace(temp_path, path)
-
-            for stale_file in existing_files - target_files:
-                stale_path = os.path.join(STAGING_DIR, stale_file)
-                try:
-                    os.remove(stale_path)
-                except FileNotFoundError:
-                    pass
-                except Exception:
-                    LOGGER.exception("Failed removing stale staging shard %s", stale_path)
-
-            if os.path.exists(LEGACY_STAGING_FILE):
-                try:
-                    os.remove(LEGACY_STAGING_FILE)
-                except Exception:
-                    LOGGER.exception("Failed removing legacy staging file %s", LEGACY_STAGING_FILE)
-
-            LOGGER.info("Staging saved with %s rows across %s state shard files", len(self.staging), len(shard_snapshots))
+        self.save_checkpoint()
+        LOGGER.info("Unified cache saved to %s with %s rows", self.checkpoint_file, len(self.checkpoint))
 
     def get_checkpoint_row(self, pid: str) -> Optional[Dict[str, str]]:
         with self.checkpoint_lock:
@@ -1430,18 +1698,82 @@ class DaycareEnricher:
             return dict(value) if value else None
 
     def get_staging_row(self, pid: str) -> Optional[Dict[str, str]]:
-        with self.staging_lock:
-            value = self.staging.get(pid)
-            if value:
-                LOGGER.debug("Staging hit for PID=%s", pid)
-            return dict(value) if value else None
+        return self.get_checkpoint_row(pid)
+
+    def queue_api_city_only_retry(self, state: str, record: Dict[str, str]) -> None:
+        pid = clean_text(record.get("PID"))
+        state = clean_text(state).upper()
+        city = clean_text(record.get("Mailing_City")).upper()
+        if not pid or not state or not city:
+            return
+        with self.api_retry_lock:
+            self.pending_api_city_only_retries.setdefault(state, {}).setdefault(city, {})[pid] = dict(record)
+
+    def pop_api_city_only_retries(self, state: str) -> Dict[str, Dict[str, Dict[str, str]]]:
+        state = clean_text(state).upper()
+        with self.api_retry_lock:
+            return dict(self.pending_api_city_only_retries.pop(state, {}))
+
+    def queue_adapter_timeout_retry(self, record: Dict[str, str]) -> None:
+        pid = clean_text(record.get("PID"))
+        state = clean_text(record.get("Mailing_State")).upper()
+        if not pid or not state:
+            return
+        with self.adapter_timeout_retry_lock:
+            self.pending_adapter_timeout_retries.setdefault(state, {})[pid] = dict(record)
+
+    def pop_adapter_timeout_retries(self, state: str) -> Dict[str, Dict[str, str]]:
+        state = clean_text(state).upper()
+        with self.adapter_timeout_retry_lock:
+            return dict(self.pending_adapter_timeout_retries.pop(state, {}))
+
+    def queue_winnie_retry(self, record: Dict[str, str]) -> None:
+        pid = clean_text(record.get("PID"))
+        state = clean_text(record.get("Mailing_State")).upper()
+        city = clean_text(record.get("Mailing_City")).upper()
+        if not pid or not state or not city:
+            return
+        with self.winnie_retry_lock:
+            self.pending_winnie_retries.setdefault(state, {}).setdefault(city, {})[pid] = dict(record)
+
+    def pop_winnie_retries(self, state: str) -> Dict[str, Dict[str, Dict[str, str]]]:
+        state = clean_text(state).upper()
+        with self.winnie_retry_lock:
+            return dict(self.pending_winnie_retries.pop(state, {}))
+
+    def get_next_winnie_backoff_seconds(self, state: str) -> float:
+        state = clean_text(state).upper() or "DEFAULT"
+        with self.winnie_backoff_lock:
+            current = float(self.winnie_backoff_seconds.get(state, 60.0))
+            self.winnie_backoff_seconds[state] = min(current * 2.0, 900.0)
+            return current
+
+    def reset_winnie_backoff_seconds(self, state: str) -> None:
+        state = clean_text(state).upper()
+        if not state:
+            return
+        with self.winnie_backoff_lock:
+            self.winnie_backoff_seconds.pop(state, None)
+
+    def get_next_google_backoff_seconds(self, state: str) -> float:
+        state = clean_text(state).upper() or "DEFAULT"
+        with self.google_backoff_lock:
+            current = float(self.google_backoff_seconds.get(state, 60.0))
+            self.google_backoff_seconds[state] = min(current * 2.0, 900.0)
+            return current
+
+    def reset_google_backoff_seconds(self, state: str) -> None:
+        state = clean_text(state).upper()
+        if not state:
+            return
+        with self.google_backoff_lock:
+            self.google_backoff_seconds.pop(state, None)
 
     def set_checkpoint_row(self, pid: str, row: Dict[str, str], sources: Optional[Dict[str, Dict[str, str]]] = None) -> None:
         with self.checkpoint_lock:
             if not has_fetched_enrichment(row, sources):
                 if pid in self.checkpoint:
-                    del self.checkpoint[pid]
-                    LOGGER.debug("Checkpoint row removed for PID=%s because no fetched data was found", pid)
+                    LOGGER.debug("Checkpoint row preserved for PID=%s because an existing fetched row is already cached", pid)
                 else:
                     LOGGER.debug("Checkpoint row skipped for PID=%s because no fetched data was found", pid)
                 return
@@ -1452,19 +1784,7 @@ class DaycareEnricher:
             LOGGER.debug("Checkpoint updated for PID=%s", pid)
 
     def set_staging_row(self, pid: str, row: Dict[str, str], sources: Optional[Dict[str, Dict[str, str]]] = None) -> None:
-        with self.staging_lock:
-            if not has_fetched_enrichment(row, sources):
-                if pid in self.staging:
-                    del self.staging[pid]
-                    LOGGER.debug("Staging row removed for PID=%s because no fetched data was found", pid)
-                else:
-                    LOGGER.debug("Staging row skipped for PID=%s because no fetched data was found", pid)
-                return
-            self.staging[pid] = {
-                "row": dict(row),
-                "sources": {key: dict(value) for key, value in (sources or {}).items()},
-            }
-            LOGGER.debug("Staging updated for PID=%s", pid)
+        return
 
     def checkpoint_size(self) -> int:
         with self.checkpoint_lock:
@@ -1489,7 +1809,9 @@ class DaycareEnricher:
         browser_profile = self.get_browser_profile()
         options = ChromeOptions()
         options.binary_location = CHROME_BINARY_PATH
-        if GOOGLE_USE_HEADLESS:
+        proxy_applied = self.apply_browser_proxy_options(options, "google")
+        effective_headless = GOOGLE_USE_HEADLESS and not clean_text(SINGLE_PID_FILTER) and not FORCE_HEADED
+        if effective_headless:
             options.add_argument("--headless=new")
         options.add_argument("--no-sandbox")
         options.add_argument("--disable-gpu")
@@ -1500,7 +1822,8 @@ class DaycareEnricher:
         options.add_argument("--remote-debugging-pipe")
         options.add_argument("--no-first-run")
         options.add_argument("--no-default-browser-check")
-        options.add_argument("--disable-extensions")
+        if not proxy_applied:
+            options.add_argument("--disable-extensions")
         options.add_argument("--disable-background-networking")
         options.add_argument("--disable-sync")
         options.add_argument("--disable-features=Translate,AcceptCHFrame,MediaRouter,OptimizationHints")
@@ -1523,6 +1846,7 @@ class DaycareEnricher:
             return driver
 
         LOGGER.info("Starting Chrome for search discovery")
+        effective_headless = GOOGLE_USE_HEADLESS and not clean_text(SINGLE_PID_FILTER) and not FORCE_HEADED
         profile_attempts: List[Tuple[str, bool]] = []
         if GOOGLE_USE_PERSISTENT_PROFILE:
             profile_attempts.append((CHROME_PROFILE_DIR, True))
@@ -1538,7 +1862,7 @@ class DaycareEnricher:
             LOGGER.info(
                 "Chrome search driver config persistent_profile=%s headless=%s profile_dir=%s",
                 is_persistent,
-                GOOGLE_USE_HEADLESS,
+                effective_headless,
                 profile_dir,
             )
             try:
@@ -1569,6 +1893,15 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
                     )
                 except Exception:
                     LOGGER.debug("Failed to apply anti-detection Chrome script", exc_info=True)
+                self.log_browser_ip(driver, "google")
+                try:
+                    if FORCE_HEADED:
+                        driver.get(GOOGLE_HOME_URL)
+                        consent_handled = GoogleSearchAdapter().handle_google_consent(driver)
+                        if consent_handled:
+                            LOGGER.info("Google consent popup detected and accepted on startup")
+                except Exception:
+                    LOGGER.exception("Failed during headed Google startup pause")
                 self.driver_local.driver = driver
                 with self.driver_lock:
                     self.driver_registry.append(driver)
@@ -1597,11 +1930,20 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
         with self.driver_lock:
             state_drivers = list(self.state_portal_drivers.values())
             self.state_portal_drivers.clear()
+            self.state_portal_base_handles.clear()
+            self.state_portal_query_handles.clear()
+            self.state_portal_session_flags.clear()
         with self.driver_lock:
             drivers = list(self.driver_registry)
             self.driver_registry.clear()
         for driver in state_drivers + drivers:
             try:
+                service = getattr(driver, "service", None)
+                if service:
+                    try:
+                        service.stop()
+                    except Exception:
+                        pass
                 driver.quit()
             except Exception:
                 LOGGER.exception("Failed while closing Selenium driver")
@@ -1613,52 +1955,61 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
             except Exception:
                 LOGGER.exception("Failed to clean temporary Chrome profile at %s", profile_dir)
         self.temp_profile_dirs.clear()
+        for bridge in list(self.proxy_bridges):
+            try:
+                bridge.close()
+            except Exception:
+                LOGGER.exception("Failed to close proxy bridge")
+        self.proxy_bridges.clear()
+
+    def reset_search_driver(self) -> None:
+        driver = getattr(self.driver_local, "driver", None)
+        if not driver:
+            return
+        try:
+            with self.driver_lock:
+                if driver in self.driver_registry:
+                    self.driver_registry.remove(driver)
+            try:
+                service = getattr(driver, "service", None)
+                if service:
+                    try:
+                        service.stop()
+                    except Exception:
+                        pass
+                driver.quit()
+            except Exception:
+                LOGGER.exception("Failed while resetting Google search driver")
+        finally:
+            self.driver_local.driver = None
+            for bridge in list(self.proxy_bridges):
+                try:
+                    bridge.close()
+                except Exception:
+                    LOGGER.exception("Failed to close proxy bridge during search driver reset")
+            self.proxy_bridges.clear()
 
     def enrich_from_state_portal(self, record: Dict[str, str]) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
         state = clean_text(record.get("Mailing_State"))
-        if state == "TX":
-            return self.enrich_from_texas_portal(record)
-        if state == "CA":
-            return self.enrich_from_california_dataset(record)
-        if state == "CT":
-            return self.enrich_from_connecticut_dataset(record)
-        if state == "AZ":
-            return self.enrich_from_arizona_portal(record)
-        if state == "MD":
-            return self.enrich_from_maryland_portal(record)
-        if state == "MI":
-            return self.enrich_from_michigan_portal(record)
-        if state == "MN":
-            return self.enrich_from_minnesota_portal(record)
-        if state == "NH":
-            return self.enrich_from_new_hampshire_portal(record)
-        if state == "SC":
-            return self.enrich_from_south_carolina_portal(record)
-        if state == "IL":
-            return self.enrich_from_illinois_portal(record)
-        if state == "NC":
-            return self.enrich_from_north_carolina_portal(record)
-        if state == "NJ":
-            return self.enrich_from_new_jersey_portal(record)
-        if state == "OK":
-            return self.enrich_from_oklahoma_portal(record)
-        if state == "MA":
-            return self.enrich_from_massachusetts_portal(record)
-        if state == "PA":
-            return self.enrich_from_pennsylvania_dataset(record)
-        if state == "VA":
-            return self.enrich_from_virginia_portal(record)
-        if state in GENERIC_OPEN_DATA_API_STATES:
-            return self.enrich_from_generic_open_data_api(record)
-        if state in STATE_PORTAL_URLS:
-            LOGGER.warning(
-                "State portal adapter not yet fully implemented or reachable for state=%s portal=%s",
-                state,
-                STATE_PORTAL_URLS[state],
-            )
-        else:
-            LOGGER.info("No official state portal adapter registered for state=%s", state)
-        return {}, {}
+        if not state:
+            return {}, {}
+        with self.driver_lock:
+            state_lock = self.state_portal_run_locks.setdefault(state, threading.Lock())
+        with state_lock:
+            if state in ADAPTER_REGISTRY:
+                return ADAPTER_REGISTRY[state].run(self, record)
+            if state in API_REGISTRY:
+                return API_REGISTRY[state].run(self, record)
+            self.queue_winnie_retry(record)
+            if state in STATE_PORTAL_URLS:
+                LOGGER.warning(
+                    "State portal adapter not yet fully implemented or reachable for state=%s portal=%s",
+                    state,
+                    STATE_PORTAL_URLS[state],
+                )
+            else:
+                LOGGER.info("No official state portal adapter registered for state=%s", state)
+            return {}, {}
 
     def get_state_scraper_model(self, state: str) -> Dict[str, object]:
         return self.state_scraper_models.get(clean_text(state), {})
@@ -1677,11 +2028,38 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
             return GENERIC_CITY_FIELDS
         return []
 
-    def build_open_data_query(self, state: str, model: Dict[str, object], name_variant: str, city: str) -> Tuple[str, Dict[str, str]]:
+    def build_open_data_query(self, state: str, model: Dict[str, object], name_variant: str, city: str, city_only: bool = False) -> Tuple[str, Dict[str, str]]:
         query_template = clean_text(str(model.get("query_template", "")))
         api_type = clean_text(str(model.get("api_type", "")))
         if not query_template:
             return "", {}
+        if city_only:
+            if api_type == "socrata_soql":
+                query_template = re.sub(
+                    r"WHERE\s+caseless_contains\([^)]+\)\s+AND\s+",
+                    "WHERE ",
+                    query_template,
+                    flags=re.IGNORECASE,
+                )
+                query_template = re.sub(
+                    r"\s+AND\s+caseless_contains\([^)]+\)",
+                    "",
+                    query_template,
+                    flags=re.IGNORECASE,
+                )
+            elif api_type == "ckan_sql":
+                query_template = re.sub(
+                    r"WHERE\s+[^W]*?\{name_variant\}[^A]*?\s+AND\s+",
+                    "WHERE ",
+                    query_template,
+                    flags=re.IGNORECASE,
+                )
+                query_template = re.sub(
+                    r"\s+AND\s+[^A]*?\{name_variant\}[^L]*(?=(?:\s+LIMIT|\s*$))",
+                    "",
+                    query_template,
+                    flags=re.IGNORECASE,
+                )
         if api_type == "socrata_soql":
             query = (
                 query_template.replace("{name_variant}", name_variant.replace("'", "''").replace('"', '""'))
@@ -1735,6 +2113,7 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
         rows: List[Dict[str, object]],
         provider_fields: List[str],
         city_fields: List[str],
+        city_only: bool = False,
     ) -> List[Dict[str, object]]:
         profile = get_record_name_profile(record)
         city = clean_text(record.get("Mailing_City")).lower()
@@ -1751,11 +2130,11 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
             item_city_lower = item_city.lower()
             if city and item_city_lower and city != item_city_lower:
                 continue
-            if any(provider_simple and variant and (variant in provider_simple or provider_simple in variant) for variant in variants):
+            if city_only or any(provider_simple and variant and (variant in provider_simple or provider_simple in variant) for variant in variants):
                 filtered.append(item)
         return filtered
 
-    def search_generic_open_data_api(self, record: Dict[str, str]) -> List[Dict[str, object]]:
+    def search_generic_open_data_api(self, record: Dict[str, str], city_only: bool = False) -> List[Dict[str, object]]:
         state = clean_text(record.get("Mailing_State"))
         model = self.get_state_scraper_model(state)
         if not model:
@@ -1769,7 +2148,7 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
         seen = set()
         api_type = clean_text(str(model.get("api_type", "")))
         if api_type == "socrata_json":
-            request_kind, params = self.build_open_data_query(state, model, profile.search_name_primary, city)
+            request_kind, params = self.build_open_data_query(state, model, profile.search_name_primary, city, city_only=city_only)
             if not request_kind:
                 return []
             rows = self.fetch_generic_open_data_rows(
@@ -1784,11 +2163,13 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
                 rows=rows,
                 provider_fields=provider_fields,
                 city_fields=city_fields,
+                city_only=city_only,
             )
             LOGGER.info("Generic API search for state=%s PID=%s produced %s candidates", state, record.get("PID", ""), len(rows))
             return rows
-        for variant in profile.search_name_variants:
-            request_kind, params = self.build_open_data_query(state, model, variant, city)
+        variants = [""] if city_only else list(profile.search_name_variants)
+        for variant in variants:
+            request_kind, params = self.build_open_data_query(state, model, variant, city, city_only=city_only)
             if not request_kind:
                 continue
             LOGGER.info(
@@ -1862,6 +2243,8 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
                 if clean_text(str(candidate.get(field, "")))
             ]
         )
+        if state == "CO" and "," in address_value:
+            address_value = clean_text(address_value.split(",", 1)[0])
         values = {
             "Mailing_Address": address_value,
             "Mailing_Zip": normalize_zip(first_non_empty(candidate, zip_fields)),
@@ -1962,28 +2345,39 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
         data = response.json()
         return data if isinstance(data, list) else []
 
-    def search_texas_portal_api(self, record: Dict[str, str]) -> List[Dict[str, object]]:
+    def search_texas_portal_api(self, record: Dict[str, str], city_only: bool = False) -> List[Dict[str, object]]:
         profile = get_record_name_profile(record)
-        provider_name = profile.search_name_primary
         city = clean_text(record.get("Mailing_City"))
-        provider_variants = profile.search_name_variants
+        provider_variants = [""] if city_only else profile.search_name_variants
         seen_provider_ids = set()
         candidates: List[Dict[str, object]] = []
 
         for variant in provider_variants:
-            escaped_variant = variant.replace('"', '""')
             escaped_city = city.replace('"', '""')
-            query = (
-                "SELECT operation_id, operation_type, operation_number, operation_name, "
-                "programs_provided, location_address, mailing_address, phone_number, county, "
-                "website_address, administrator_director_name, type_of_issuance, issuance_date, "
-                "conditions_on_permit, accepts_child_care_subsidies, hours_of_operation, "
-                "days_of_operation, other_schedule_information, total_capacity, "
-                "licensed_to_serve_ages, corrective_action, adverse_action, temporarily_closed, "
-                "email_address, care_type, operation_status, address_line, city, state, zipcode "
-                f'WHERE caseless_contains(operation_name, "{escaped_variant}") '
-                f'AND caseless_one_of(city, "{escaped_city}")'
-            )
+            if city_only:
+                query = (
+                    "SELECT operation_id, operation_type, operation_number, operation_name, "
+                    "programs_provided, location_address, mailing_address, phone_number, county, "
+                    "website_address, administrator_director_name, type_of_issuance, issuance_date, "
+                    "conditions_on_permit, accepts_child_care_subsidies, hours_of_operation, "
+                    "days_of_operation, other_schedule_information, total_capacity, "
+                    "licensed_to_serve_ages, corrective_action, adverse_action, temporarily_closed, "
+                    "email_address, care_type, operation_status, address_line, city, state, zipcode "
+                    f'WHERE caseless_one_of(city, "{escaped_city}")'
+                )
+            else:
+                escaped_variant = variant.replace('"', '""')
+                query = (
+                    "SELECT operation_id, operation_type, operation_number, operation_name, "
+                    "programs_provided, location_address, mailing_address, phone_number, county, "
+                    "website_address, administrator_director_name, type_of_issuance, issuance_date, "
+                    "conditions_on_permit, accepts_child_care_subsidies, hours_of_operation, "
+                    "days_of_operation, other_schedule_information, total_capacity, "
+                    "licensed_to_serve_ages, corrective_action, adverse_action, temporarily_closed, "
+                    "email_address, care_type, operation_status, address_line, city, state, zipcode "
+                    f'WHERE caseless_contains(operation_name, "{escaped_variant}") '
+                    f'AND caseless_one_of(city, "{escaped_city}")'
+                )
             LOGGER.info(
                 "Texas public dataset search for PID=%s provider_variant=%s city=%s",
                 record.get("PID", ""),
@@ -2154,16 +2548,23 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
             f"AND UPPER(facility_city) ILIKE '%{escaped_city}%'"
         )
 
-    def search_california_dataset(self, record: Dict[str, str]) -> List[Dict[str, object]]:
+    def search_california_dataset(self, record: Dict[str, str], city_only: bool = False) -> List[Dict[str, object]]:
         profile = get_record_name_profile(record)
         city = clean_text(record.get("Mailing_City"))
-        provider_variants = profile.search_name_variants
+        provider_variants = [""] if city_only else profile.search_name_variants
         city_variants = build_city_search_variants(city)
         candidates: List[Dict[str, object]] = []
         seen_ids = set()
         for variant in provider_variants:
             for city_variant in city_variants:
-                sql = self.build_california_sql_query(variant, city_variant)
+                if city_only:
+                    escaped_city_variant = city_variant.replace("'", "''").upper()
+                    sql = (
+                        'SELECT * FROM "5bac6551-4d6c-45d6-93b8-e6ded428d98e" '
+                        f"WHERE UPPER(facility_city) ILIKE '%{escaped_city_variant}%'"
+                    )
+                else:
+                    sql = self.build_california_sql_query(variant, city_variant)
                 LOGGER.info(
                     "California public dataset search for PID=%s provider_variant=%s city_variant=%s",
                     record.get("PID", ""),
@@ -2317,22 +2718,28 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
         data = response.json()
         return data if isinstance(data, list) else []
 
-    def search_connecticut_dataset(self, record: Dict[str, str]) -> List[Dict[str, object]]:
+    def search_connecticut_dataset(self, record: Dict[str, str], city_only: bool = False) -> List[Dict[str, object]]:
         profile = get_record_name_profile(record)
-        provider_name = profile.search_name_primary
         city = clean_text(record.get("Mailing_City"))
-        provider_variants = profile.search_name_variants
+        provider_variants = [""] if city_only else profile.search_name_variants
         candidates: List[Dict[str, object]] = []
         seen_ids = set()
         for variant in provider_variants:
-            escaped_variant = variant.replace("'", "''")
             escaped_city = city.replace("'", "''")
-            query = (
-                "SELECT name, address2, address3, city, statecode, zipcode, phone, "
-                "minimumage, maximumage, maximumcapacity "
-                f"WHERE caseless_contains(name, '{escaped_variant}') "
-                f"AND caseless_one_of(city, '{escaped_city}')"
-            )
+            if city_only:
+                query = (
+                    "SELECT name, address2, address3, city, statecode, zipcode, phone, "
+                    "minimumage, maximumage, maximumcapacity "
+                    f"WHERE caseless_one_of(city, '{escaped_city}')"
+                )
+            else:
+                escaped_variant = variant.replace("'", "''")
+                query = (
+                    "SELECT name, address2, address3, city, statecode, zipcode, phone, "
+                    "minimumage, maximumage, maximumcapacity "
+                    f"WHERE caseless_contains(name, '{escaped_variant}') "
+                    f"AND caseless_one_of(city, '{escaped_city}')"
+                )
             LOGGER.info(
                 "Connecticut public dataset search for PID=%s provider_variant=%s city=%s",
                 record.get("PID", ""),
@@ -2494,23 +2901,32 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
         data = response.json()
         return data if isinstance(data, list) else []
 
-    def search_pennsylvania_dataset(self, record: Dict[str, str]) -> List[Dict[str, object]]:
+    def search_pennsylvania_dataset(self, record: Dict[str, str], city_only: bool = False) -> List[Dict[str, object]]:
         profile = get_record_name_profile(record)
         city = clean_text(record.get("Mailing_City"))
         candidates: List[Dict[str, object]] = []
         seen_ids = set()
-        for variant in profile.search_name_variants[:4]:
-            token = pick_best_name_token(variant)
-            if not token:
-                continue
-            escaped_token = token.replace("'", "''")
+        variants = [""] if city_only else profile.search_name_variants[:4]
+        for variant in variants:
             escaped_city = city.replace("'", "''")
-            query = (
-                "SELECT facility_name, facility_address, facility_address_continued, "
-                "facility_city, facility_state, facility_zip_code, facility_phone, capacity "
-                f"WHERE caseless_one_of(facility_city, '{escaped_city}') "
-                f"AND caseless_contains(facility_name, '{escaped_token}')"
-            )
+            if city_only:
+                token = ""
+                query = (
+                    "SELECT facility_name, facility_address, facility_address_continued, "
+                    "facility_city, facility_state, facility_zip_code, facility_phone, capacity "
+                    f"WHERE caseless_one_of(facility_city, '{escaped_city}')"
+                )
+            else:
+                token = pick_best_name_token(variant)
+                if not token:
+                    continue
+                escaped_token = token.replace("'", "''")
+                query = (
+                    "SELECT facility_name, facility_address, facility_address_continued, "
+                    "facility_city, facility_state, facility_zip_code, facility_phone, capacity "
+                    f"WHERE caseless_one_of(facility_city, '{escaped_city}') "
+                    f"AND caseless_contains(facility_name, '{escaped_token}')"
+                )
             LOGGER.info(
                 "Pennsylvania public dataset search for PID=%s provider_variant=%s token=%s city=%s",
                 record.get("PID", ""),
@@ -2656,14 +3072,16 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
             )
         return values, sources
 
-    def build_headless_portal_driver(self) -> webdriver.Chrome:
+    def build_headless_portal_driver(self, state: str = "") -> webdriver.Chrome:
         last_error: Optional[Exception] = None
+        effective_headless = not clean_text(SINGLE_PID_FILTER) and not FORCE_HEADED
         for attempt in range(1, 4):
             profile_dir = tempfile.mkdtemp(prefix="portal_driver_", dir=os.path.join(BASE_DIR, "chrome_profiles"))
             self.temp_profile_dirs.append(profile_dir)
             options = ChromeOptions()
             options.binary_location = CHROME_BINARY_PATH
-            # options.add_argument("--headless=new")
+            if effective_headless:
+                options.add_argument("--headless=new")
             options.add_argument("--no-sandbox")
             options.add_argument("--disable-dev-shm-usage")
             options.add_argument("--disable-gpu")
@@ -2671,7 +3089,6 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
             options.add_argument("--window-size=1440,1400")
             options.add_argument("--disable-blink-features=AutomationControlled")
             options.add_argument("--disable-background-networking")
-            options.add_argument("--disable-extensions")
             options.add_argument("--disable-sync")
             options.add_argument("--metrics-recording-only")
             options.add_argument("--mute-audio")
@@ -2684,10 +3101,20 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
                 options.add_experimental_option("useAutomationExtension", False)
             elif attempt == 2:
                 options.add_argument(f"--user-data-dir={profile_dir}")
+            proxy_applied = self.apply_browser_proxy_options(options, "portal", state)
+            if not proxy_applied:
+                options.add_argument("--disable-extensions")
             try:
-                LOGGER.info("Starting headless portal Chrome attempt=%s profile_dir=%s", attempt, profile_dir)
+                LOGGER.info(
+                    "Starting portal Chrome attempt=%s headless=%s profile_dir=%s state=%s",
+                    attempt,
+                    effective_headless,
+                    profile_dir,
+                    state,
+                )
                 driver = webdriver.Chrome(options=options)
                 driver.set_page_load_timeout(SELENIUM_PAGELOAD_TIMEOUT)
+                self.log_browser_ip(driver, "portal", state)
                 with self.driver_lock:
                     self.driver_registry.append(driver)
                 return driver
@@ -2706,7 +3133,7 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
                 continue
         if last_error:
             raise last_error
-        raise RuntimeError("Failed to start headless portal Chrome for unknown reason")
+        raise RuntimeError("Failed to start portal Chrome for unknown reason")
 
     def get_state_portal_driver(self, state: str) -> webdriver.Chrome:
         state = clean_text(state).upper()
@@ -2719,7 +3146,7 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
             except Exception:
                 LOGGER.warning("Existing %s portal driver became unusable; restarting it", state)
                 self.reset_state_portal_driver(state)
-        driver = self.build_headless_portal_driver()
+        driver = self.build_headless_portal_driver(state)
         with self.driver_lock:
             self.state_portal_drivers[state] = driver
             try:
@@ -2744,24 +3171,35 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
 
     def open_state_portal_query_tab(self, state: str, url: str) -> webdriver.Chrome:
         state = clean_text(state).upper()
-        driver = self.get_state_portal_driver(state)
-        try:
-            base_handle = self.state_portal_base_handles.get(state, "")
-            current_handles = list(driver.window_handles)
-            if not base_handle or base_handle not in current_handles:
-                base_handle = driver.current_window_handle
-                with self.driver_lock:
-                    self.state_portal_base_handles[state] = base_handle
-            driver.switch_to.window(base_handle)
-            existing_handles = list(driver.window_handles)
-            driver.execute_script("window.open(arguments[0], '_blank');", url)
-            WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > len(existing_handles))
-            new_handles = [handle for handle in driver.window_handles if handle not in existing_handles]
-            driver.switch_to.window(new_handles[-1] if new_handles else driver.window_handles[-1])
-            return driver
-        except Exception:
-            self.reset_state_portal_driver(state)
-            raise
+        for attempt in range(2):
+            driver = self.get_state_portal_driver(state)
+            try:
+                base_handle = self.state_portal_base_handles.get(state, "")
+                current_handles = list(driver.window_handles)
+                if not base_handle or base_handle not in current_handles:
+                    base_handle = driver.current_window_handle
+                    with self.driver_lock:
+                        self.state_portal_base_handles[state] = base_handle
+                driver.switch_to.window(base_handle)
+                existing_handles = list(driver.window_handles)
+                try:
+                    driver.execute_script("window.open(arguments[0], '_blank');", url)
+                    WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > len(existing_handles))
+                    new_handles = [handle for handle in driver.window_handles if handle not in existing_handles]
+                    driver.switch_to.window(new_handles[-1] if new_handles else driver.window_handles[-1])
+                except Exception:
+                    try:
+                        driver.get(url)
+                    except Exception:
+                        if attempt == 0:
+                            self.reset_state_portal_driver(state)
+                            continue
+                        raise
+                return driver
+            except Exception:
+                self.reset_state_portal_driver(state)
+                if attempt == 1:
+                    raise
 
     def open_or_reuse_state_portal_query_tab(
         self,
@@ -2770,44 +3208,60 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
         ready_locator: Optional[Tuple[str, str]] = None,
     ) -> webdriver.Chrome:
         state = clean_text(state).upper()
-        driver = self.get_state_portal_driver(state)
-        try:
-            base_handle = self.state_portal_base_handles.get(state, "")
-            query_handle = self.state_portal_query_handles.get(state, "")
-            handles = list(driver.window_handles)
-            if not base_handle or base_handle not in handles:
-                base_handle = driver.current_window_handle
-                with self.driver_lock:
-                    self.state_portal_base_handles[state] = base_handle
-            if query_handle and query_handle in handles:
-                driver.switch_to.window(query_handle)
-            else:
-                driver.switch_to.window(base_handle)
-                existing_handles = list(driver.window_handles)
-                driver.execute_script("window.open(arguments[0], '_blank');", url)
-                WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > len(existing_handles))
-                new_handles = [handle for handle in driver.window_handles if handle not in existing_handles]
-                query_handle = new_handles[-1] if new_handles else driver.window_handles[-1]
-                driver.switch_to.window(query_handle)
-                with self.driver_lock:
-                    self.state_portal_query_handles[state] = query_handle
-            if ready_locator:
-                by, value = ready_locator
-                try:
-                    WebDriverWait(driver, 5).until(EC.presence_of_element_located((by, value)))
-                except Exception:
-                    driver.get(url)
-                    WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 25)).until(
-                        EC.presence_of_element_located((by, value))
-                    )
-            return driver
-        except Exception:
-            self.reset_state_portal_driver(state)
-            raise
+        for attempt in range(2):
+            driver = self.get_state_portal_driver(state)
+            try:
+                base_handle = self.state_portal_base_handles.get(state, "")
+                query_handle = self.state_portal_query_handles.get(state, "")
+                handles = list(driver.window_handles)
+                if not base_handle or base_handle not in handles:
+                    base_handle = driver.current_window_handle
+                    with self.driver_lock:
+                        self.state_portal_base_handles[state] = base_handle
+                if query_handle and query_handle in handles:
+                    driver.switch_to.window(query_handle)
+                else:
+                    driver.switch_to.window(base_handle)
+                    existing_handles = list(driver.window_handles)
+                    try:
+                        driver.execute_script("window.open(arguments[0], '_blank');", url)
+                        WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > len(existing_handles))
+                        new_handles = [handle for handle in driver.window_handles if handle not in existing_handles]
+                        query_handle = new_handles[-1] if new_handles else driver.window_handles[-1]
+                        driver.switch_to.window(query_handle)
+                    except Exception:
+                        query_handle = base_handle
+                        driver.switch_to.window(query_handle)
+                        try:
+                            driver.get(url)
+                        except Exception:
+                            if attempt == 0:
+                                self.reset_state_portal_driver(state)
+                                continue
+                            raise
+                    with self.driver_lock:
+                        self.state_portal_query_handles[state] = query_handle
+                if ready_locator:
+                    by, value = ready_locator
+                    try:
+                        WebDriverWait(driver, 5).until(EC.presence_of_element_located((by, value)))
+                    except Exception:
+                        driver.get(url)
+                        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 25)).until(
+                            EC.presence_of_element_located((by, value))
+                        )
+                return driver
+            except Exception:
+                self.reset_state_portal_driver(state)
+                if attempt == 1:
+                    raise
 
     def finalize_state_portal_query(self, state: str, home_url: str = "") -> None:
         state = clean_text(state).upper()
-        driver = self.get_state_portal_driver(state)
+        with self.driver_lock:
+            driver = self.state_portal_drivers.get(state)
+        if not driver:
+            return
         try:
             handles = list(driver.window_handles)
             base_handle = self.state_portal_base_handles.get(state, "")
@@ -2826,3749 +3280,9 @@ Object.defineProperty(navigator, 'platform', {get: () => 'Win32'});
                 driver.switch_to.window(remaining_handles[0])
                 with self.driver_lock:
                     self.state_portal_base_handles[state] = remaining_handles[0]
-            if home_url:
-                driver.get(home_url)
         except Exception:
             LOGGER.info("Failed finalizing %s query tab cleanly; resetting shared portal driver", state)
             self.reset_state_portal_driver(state)
-
-    def search_illinois_portal(self, record: Dict[str, str]) -> List[Dict[str, str]]:
-        profile = get_record_name_profile(record)
-        city = clean_text(record.get("Mailing_City"))
-        home_url = "https://sunshine.dcfs.illinois.gov/Content/Licensing/Daycare/ProviderLookup.aspx"
-        try:
-            for variant in profile.search_name_variants:
-                driver = self.open_state_portal_query_tab("IL", home_url)
-                WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                    EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolderContent_ASPxProviderName_I"))
-                )
-                provider_input = driver.find_element(By.ID, "ctl00_ContentPlaceHolderContent_ASPxProviderName_I")
-                city_input = driver.find_element(By.ID, "ctl00_ContentPlaceHolderContent_ASPxCity_I")
-                provider_input.clear()
-                provider_input.send_keys(variant)
-                city_input.clear()
-                city_input.send_keys(city)
-                LOGGER.info(
-                    "Illinois portal searching PID=%s with provider_variant=%s city=%s",
-                    record.get("PID", ""),
-                    variant,
-                    city,
-                )
-                driver.execute_script(
-                    """
-                    if (typeof dcfssearch === 'function') {
-                        dcfssearch();
-                    } else {
-                        const btn = document.getElementById('ctl00_ContentPlaceHolderContent_ASPxSearch_I');
-                        if (btn) { btn.click(); }
-                    }
-                    """
-                )
-                WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                    EC.presence_of_element_located((By.ID, "ctl00_ContentPlaceHolderContent_ASPxGridView1"))
-                )
-                time.sleep(1.0)
-                soup = BeautifulSoup(driver.page_source, "html.parser")
-                table = soup.select_one("#ctl00_ContentPlaceHolderContent_ASPxGridView1_DXMainTable")
-                if not table:
-                    continue
-                rows = table.select("tr.dxgvDataRow, tr.dxgvDataRowAlt")
-                if not rows:
-                    rows = [row for row in table.select("tr") if row.select("td.dxgv, td.dxgvFixedColumn")]
-                results: List[Dict[str, str]] = []
-                for row in rows:
-                    cells = [
-                        clean_text(cell.get_text(" ", strip=True))
-                        for cell in row.select("td.dxgv, td.dxgvFixedColumn")
-                    ]
-                    if len(cells) < 12:
-                        continue
-                    if cells[0] in {"Doing Business as", "Street", "City", "County", "Zip", "Phone"}:
-                        continue
-                    candidate = {
-                        "provider_name": cells[0],
-                        "address": cells[1],
-                        "city": cells[2],
-                        "zip": cells[4],
-                        "phone": cells[5],
-                        "age_range": cells[8],
-                        "capacity": cells[10],
-                    }
-                    results.append(candidate)
-                    LOGGER.info("Illinois portal candidate PID=%s variant=%s data=%s", record.get("PID", ""), variant, candidate)
-                if results:
-                    LOGGER.info(
-                        "Illinois portal returned %s candidate rows for PID=%s using provider_variant=%s",
-                        len(results),
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    self.finalize_state_portal_query("IL", home_url)
-                    return results
-                self.finalize_state_portal_query("IL", home_url)
-            LOGGER.info("Illinois portal returned 0 candidate rows for PID=%s", record.get("PID", ""))
-            return []
-        except Exception:
-            self.reset_state_portal_driver("IL")
-            raise
-
-    def enrich_from_illinois_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        try:
-            candidates = self.search_illinois_portal(record)
-        except Exception:
-            LOGGER.exception("Illinois portal search failed for PID=%s", record.get("PID", ""))
-            return {}, {}
-        if not candidates:
-            return {}, {}
-        best_candidate = None
-        best_score = -999
-        for candidate in candidates:
-            overlap = token_overlap_score(record.get("Daycare_Name", ""), candidate.get("provider_name", ""))
-            city_match = clean_text(record.get("Mailing_City")).lower() == clean_text(candidate.get("city")).lower()
-            score = overlap * 4
-            if city_match:
-                score += 3
-            if candidate.get("capacity"):
-                score += 1
-            LOGGER.info(
-                "Illinois portal candidate scored %s for PID=%s provider=%s overlap=%.3f city_match=%s",
-                score,
-                record.get("PID", ""),
-                candidate.get("provider_name", ""),
-                overlap,
-                city_match,
-            )
-            if score > best_score:
-                best_score = score
-                best_candidate = candidate
-        if not best_candidate:
-            return {}, {}
-        best_city_match = clean_text(record.get("Mailing_City")).lower() == clean_text(best_candidate.get("city")).lower()
-        best_overlap = token_overlap_score(record.get("Daycare_Name", ""), best_candidate.get("provider_name", ""))
-        if best_score < 6 and not (best_city_match and best_overlap >= 0.35):
-            LOGGER.warning(
-                "Illinois portal rejected best candidate for PID=%s provider=%s score=%s overlap=%.3f city_match=%s",
-                record.get("PID", ""),
-                best_candidate.get("provider_name", ""),
-                best_score,
-                best_overlap,
-                best_city_match,
-            )
-            return {}, {}
-        address_value = ", ".join(
-            part for part in [best_candidate.get("address", ""), best_candidate.get("city", ""), "IL", best_candidate.get("zip", "")]
-            if clean_text(part)
-        )
-        values = {
-            "Mailing_Address": address_value,
-            "Mailing_Zip": normalize_zip(best_candidate.get("zip", "")),
-            "Telephone": normalize_phone(best_candidate.get("phone", "")),
-            "URL": "",
-            "Capacity (optional)": best_candidate.get("capacity", ""),
-            "Age Range (optional)": normalize_age_groups_text_to_numeric_range(best_candidate.get("age_range", "")),
-        }
-        matched_provider_name = best_candidate.get("provider_name", "")
-        match_status, match_confidence, match_reason = classify_match_status(
-            record,
-            candidate_name=matched_provider_name,
-            candidate_city=best_candidate.get("city", ""),
-            candidate_address=address_value,
-            candidate_phone=values["Telephone"],
-            candidate_url="",
-        )
-        values.update(
-            {
-                "Matched_Provider_Name": matched_provider_name,
-                "Match_Status": match_status,
-                "Match_Confidence": match_confidence,
-                "Matched_Reason": match_reason,
-            }
-        )
-        source_url = "https://sunshine.dcfs.illinois.gov/Content/Licensing/Daycare/ProviderLookup.aspx"
-        sources = {
-            field: build_source_entry(value=value, source_url=source_url, source_type="official_state_portal", notes="Illinois official childcare portal")
-            for field, value in values.items()
-            if clean_text(value)
-        }
-        return values, sources
-
-    def search_virginia_portal(self, record: Dict[str, str]) -> List[Dict[str, str]]:
-        profile = get_record_name_profile(record)
-        home_url = "https://www.dss.virginia.gov/facility/search/cc2.cgi?rm=Search"
-        try:
-            for variant in profile.search_name_variants[:4]:
-                driver = self.open_state_portal_query_tab("VA", home_url)
-                WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                    EC.presence_of_element_located((By.NAME, "search_keywords_name"))
-                )
-                name_input = driver.find_element(By.NAME, "search_keywords_name")
-                name_input.clear()
-                name_input.send_keys(variant)
-                LOGGER.info(
-                    "Virginia portal searching PID=%s with provider_variant=%s",
-                    record.get("PID", ""),
-                    variant,
-                )
-                name_input.submit()
-                WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
-                )
-                time.sleep(1.0)
-                soup = BeautifulSoup(driver.page_source, "html.parser")
-                results: List[Dict[str, str]] = []
-                seen_urls = set()
-                for link in soup.select("a[href*='cc2.cgi?rm=Details;ID=']"):
-                    href = clean_text(link.get("href", ""))
-                    href = urljoin("https://www.dss.virginia.gov/facility/search/cc2.cgi?rm=Search", href)
-                    name = clean_text(link.get_text(" ", strip=True))
-                    if not href or href in seen_urls:
-                        continue
-                    if not name:
-                        parent_text = clean_text(link.parent.get_text(" ", strip=True) if link.parent else "")
-                        name = parent_text.split("  ")[0].strip() if parent_text else ""
-                    if not name:
-                        continue
-                    container = link.find_parent("tr") or link.find_parent("td") or link.parent
-                    container_text = clean_text(container.get_text("\n", strip=True) if container else "")
-                    container_lines = [
-                        clean_text(item)
-                        for item in (container.stripped_strings if container else [])
-                        if clean_text(item)
-                    ]
-                    address_line = ""
-                    city = ""
-                    zip_code = ""
-                    for line in container_lines:
-                        if line == name:
-                            continue
-                        if not address_line and re.search(r"\b\d{1,6}\s+[A-Za-z0-9#.\- ]+\b", line):
-                            address_line = line
-                        city_state_zip_match = re.search(r"\b([A-Z][A-Z .'-]+),\s*VA\s+(\d{5}(?:-\d{4})?)\b", line, re.IGNORECASE)
-                        if city_state_zip_match:
-                            city = clean_text(city_state_zip_match.group(1))
-                            zip_code = normalize_zip(city_state_zip_match.group(2))
-                    address_value = ", ".join(
-                        part for part in [address_line, city, "VA", zip_code] if clean_text(part)
-                    )
-                    phone_value = normalize_phone(container_text)
-                    seen_urls.add(href)
-                    results.append(
-                        {
-                            "provider_name": name,
-                            "detail_url": href,
-                            "address": address_value,
-                            "city": city,
-                            "zip": zip_code,
-                            "phone": phone_value,
-                        }
-                    )
-                if results:
-                    LOGGER.info(
-                        "Virginia portal returned %s detail links for PID=%s using provider_variant=%s",
-                        len(results),
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    return results
-                self.finalize_state_portal_query("VA", home_url)
-            LOGGER.info("Virginia portal returned 0 detail links for PID=%s", record.get("PID", ""))
-            return []
-        except Exception:
-            self.reset_state_portal_driver("VA")
-            raise
-
-    def fetch_virginia_detail_page(
-        self,
-        detail_url: str,
-        action_label: str,
-        driver: Optional[webdriver.Chrome] = None,
-    ) -> Dict[str, str]:
-        driver = driver or self.get_state_portal_driver("VA")
-        try:
-            LOGGER.info("Fetching Virginia detail page via Selenium action=%s url=%s", action_label, detail_url)
-            driver.get(detail_url)
-            WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                EC.presence_of_element_located((By.TAG_NAME, "body"))
-            )
-            time.sleep(1.0)
-            soup = BeautifulSoup(driver.page_source, "html.parser")
-            text = soup.get_text("\n", strip=True)
-        except Exception:
-            self.reset_state_portal_driver("VA")
-            raise
-
-        labeled_values: Dict[str, str] = {}
-        for row in soup.select("tr"):
-            cells = row.find_all(["th", "td"])
-            if len(cells) < 2:
-                continue
-            label = clean_text(cells[0].get_text(" ", strip=True)).rstrip(":")
-            value = clean_text(" ".join(cell.get_text(" ", strip=True) for cell in cells[1:]))
-            if not label or not value:
-                continue
-            labeled_values[label.lower()] = value
-
-        for dt in soup.select("dt"):
-            label = clean_text(dt.get_text(" ", strip=True)).rstrip(":").lower()
-            dd = dt.find_next_sibling("dd")
-            value = clean_text(dd.get_text(" ", strip=True) if dd else "")
-            if label and value:
-                labeled_values[label] = value
-
-        def extract_labeled_value(label: str) -> str:
-            direct = labeled_values.get(label.lower(), "")
-            if direct:
-                return direct
-            for key, value in labeled_values.items():
-                if label.lower() in key:
-                    return value
-            patterns = [
-                re.compile(rf"{re.escape(label)}\s*[:\t]\s*(.+)", re.IGNORECASE),
-                re.compile(rf"{re.escape(label)}\s*\n\s*(.+)", re.IGNORECASE),
-            ]
-            for pattern in patterns:
-                match = pattern.search(text)
-                if match:
-                    return clean_text(match.group(1))
-            return ""
-
-        def extract_structured_address() -> str:
-            for label in (
-                "Address",
-                "Facility Address",
-                "Street Address",
-                "Location",
-                "Physical Address",
-            ):
-                value = extract_labeled_value(label)
-                if value:
-                    return value
-            lines = [clean_text(line) for line in text.splitlines() if clean_text(line)]
-            for index, line in enumerate(lines):
-                if re.search(r"\b\d{1,6}\s+[A-Za-z0-9#.\-]+\b", line):
-                    if index + 1 < len(lines) and re.search(r"\b[A-Z][A-Za-z.\- ]+,\s*[A-Z]{2}\s+\d{5}", lines[index + 1]):
-                        return f"{line}, {lines[index + 1]}"
-                    return line
-            return self.extract_address_from_text(text, {})
-
-        def extract_structured_phone() -> str:
-            for label in ("Phone", "Telephone", "Phone Number", "Business Phone"):
-                value = normalize_phone(extract_labeled_value(label))
-                if value:
-                    return value
-            for key, value in labeled_values.items():
-                if "phone" in key or "telephone" in key:
-                    normalized = normalize_phone(value)
-                    if normalized:
-                        return normalized
-            return normalize_phone(self.extract_phone_from_text(text))
-
-        detail_values = {
-            "Mailing_Address": extract_structured_address(),
-            "Mailing_Zip": self.extract_zip_from_text(extract_structured_address() or text, {}),
-            "Telephone": extract_structured_phone(),
-            "URL": "",
-            "Capacity (optional)": extract_labeled_value("Capacity"),
-            "Age Range (optional)": extract_labeled_value("Ages"),
-            "Business_Hours": extract_labeled_value("Business Hours"),
-            "Facility_Type": extract_labeled_value("Facility Type"),
-            "License_Type": extract_labeled_value("License Type"),
-            "Administrator": extract_labeled_value("Administrator"),
-            "Inspector": extract_labeled_value("Inspector"),
-            "Facility_ID": extract_labeled_value("License/Facility ID#"),
-        }
-        LOGGER.info("Virginia detail page parsed url=%s values=%s", detail_url, detail_values)
-        return detail_values
-
-    def enrich_from_virginia_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        try:
-            candidates = self.search_virginia_portal(record)
-        except Exception:
-            LOGGER.exception("Virginia portal search failed for PID=%s", record.get("PID", ""))
-            return {}, {}
-        if not candidates:
-            return {}, {}
-        profile = get_record_name_profile(record)
-        best_candidate = None
-        best_score = -999
-        best_variant_hit = False
-        for candidate in candidates:
-            provider_name = clean_text(candidate.get("provider_name", ""))
-            score = token_overlap_score(record.get("Daycare_Name", ""), provider_name) * 4
-            variant_hit = any(
-                clean_text(variant)
-                and len(clean_text(variant)) >= 4
-                and clean_text(variant).lower() in provider_name.lower()
-                for variant in profile.search_name_variants[:4]
-            )
-            if variant_hit:
-                score += 4
-            LOGGER.info(
-                "Virginia portal candidate scored %s for PID=%s provider=%s variant_hit=%s",
-                score,
-                record.get("PID", ""),
-                provider_name,
-                variant_hit,
-            )
-            if score > best_score:
-                best_score = score
-                best_candidate = candidate
-                best_variant_hit = variant_hit
-        if not best_candidate:
-            return {}, {}
-        if best_score < 6 and not (best_variant_hit and len(candidates) == 1):
-            LOGGER.warning(
-                "Virginia portal rejected best candidate for PID=%s provider=%s score=%s variant_hit=%s candidate_count=%s",
-                record.get("PID", ""),
-                clean_text(best_candidate.get("provider_name", "")),
-                best_score,
-                best_variant_hit,
-                len(candidates),
-            )
-            return {}, {}
-        detail_url = best_candidate.get("detail_url", "")
-        shared_driver = self.get_state_portal_driver("VA")
-        try:
-            detail_values = self.fetch_virginia_detail_page(
-                detail_url=detail_url,
-                action_label=f"virginia detail page [{record.get('PID', '')}]",
-                driver=shared_driver,
-            )
-        except Exception:
-            LOGGER.exception("Virginia detail page fetch failed for PID=%s url=%s", record.get("PID", ""), detail_url)
-            detail_values = {}
-        finally:
-            self.finalize_state_portal_query("VA", "https://www.dss.virginia.gov/facility/search/cc2.cgi?rm=Search")
-        detail_address = clean_text(detail_values.get("Mailing_Address", ""))
-        candidate_address = clean_text(best_candidate.get("address", ""))
-        selected_address = detail_address if looks_like_street_address(detail_address) else candidate_address
-        detail_zip = normalize_zip(detail_values.get("Mailing_Zip", ""))
-        candidate_zip = normalize_zip(best_candidate.get("zip", ""))
-        selected_zip = detail_zip if detail_zip else candidate_zip
-        values = {
-            "Mailing_Address": selected_address,
-            "Mailing_Zip": selected_zip,
-            "Telephone": normalize_phone(detail_values.get("Telephone", "")) or normalize_phone(best_candidate.get("phone", "")) or normalize_phone(detail_values.get("Inspector", "")),
-            "URL": "",
-            "Capacity (optional)": clean_text(detail_values.get("Capacity (optional)", "")),
-            "Age Range (optional)": normalize_age_groups_text_to_numeric_range(detail_values.get("Age Range (optional)", "")),
-        }
-        matched_provider_name = best_candidate.get("provider_name", "")
-        match_status, match_confidence, match_reason = classify_match_status(
-            record,
-            candidate_name=matched_provider_name,
-            candidate_city=clean_text(record.get("Mailing_City")),
-            candidate_address=values.get("Mailing_Address", ""),
-            candidate_phone=values.get("Telephone", ""),
-            candidate_url=detail_url,
-        )
-        values.update(
-            {
-                "Matched_Provider_Name": matched_provider_name,
-                "Match_Status": match_status,
-                "Match_Confidence": match_confidence,
-                "Matched_Reason": match_reason,
-            }
-        )
-        source_url = detail_url or "https://www.dss.virginia.gov/facility/search/cc2.cgi?rm=Search"
-        sources = {
-            field: build_source_entry(
-                value=value,
-                source_url=source_url,
-                source_type="official_state_portal",
-                notes="Virginia official childcare portal"
-                if field not in {"Matched_Provider_Name", "Match_Status", "Match_Confidence", "Matched_Reason"}
-                else "Virginia official childcare portal; accepted candidate metadata",
-            )
-            for field, value in values.items()
-            if clean_text(value)
-        }
-        return values, sources
-
-    def search_new_jersey_portal(self, record: Dict[str, str]) -> List[Dict[str, str]]:
-        profile = get_record_name_profile(record)
-        city = clean_text(record.get("Mailing_City"))
-        portal_url = "https://childcareexplorer.njccis.com/portal/"
-        try:
-            for variant in profile.search_name_variants[:4]:
-                driver = self.open_state_portal_query_tab("NJ", portal_url)
-                LOGGER.info(
-                    "Reloading New Jersey portal landing page for PID=%s before provider_variant=%s",
-                    record.get("PID", ""),
-                    variant,
-                )
-                WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                    EC.presence_of_element_located((By.NAME, "facilityName"))
-                )
-                time.sleep(1.0)
-                provider_input = driver.find_element(By.NAME, "facilityName")
-                city_input = driver.find_element(By.NAME, "city")
-                provider_input.clear()
-                provider_input.send_keys(variant)
-                city_input.clear()
-                city_input.send_keys(city)
-                LOGGER.info(
-                    "New Jersey portal searching PID=%s with provider_variant=%s city=%s",
-                    record.get("PID", ""),
-                    variant,
-                    city,
-                )
-                driver.find_element(By.ID, "submit").click()
-                WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                    lambda d: d.execute_script(
-                        "const grid = document.getElementById('grdUsers'); return !!grid && !grid.hasAttribute('hidden');"
-                    )
-                )
-                time.sleep(1.0)
-                candidate_rows = driver.execute_script(
-                    """
-const table = document.querySelector('#grdUsers tbody.ui-datatable-data');
-if (!table) return [];
-const rows = [];
-Array.from(table.querySelectorAll('tr')).forEach((row, rowIndex) => {
-  if (row.innerText.toLowerCase().includes('no records found')) return;
-  const cells = Array.from(row.querySelectorAll('td'));
-  if (cells.length < 6) return;
-  const selectNode = cells[0].querySelector('button.btn-sm, a.btn-sm, button, a, input[type=\"button\"], input[type=\"submit\"]');
-  const selectText = ((selectNode && (selectNode.innerText || selectNode.value)) || '').trim();
-  const cellValue = (cellIndex) => {
-    const cell = cells[cellIndex];
-    if (!cell) return '';
-    const dataNode = cell.querySelector('.ui-cell-data');
-    return ((dataNode && dataNode.innerText) || cell.innerText || '').trim();
-  };
-  rows.push({
-    row_index: rowIndex,
-    has_select: !!selectNode,
-    select_text: selectText,
-    provider_name: cellValue(1),
-    address: cellValue(2),
-    city: cellValue(3),
-    zip: cellValue(4),
-    county: cellValue(5),
-    text: (row.innerText || '').trim()
-  });
-});
-return rows;
-"""
-                )
-                results: List[Dict[str, str]] = []
-                for item in candidate_rows or []:
-                    provider_name = clean_text(item.get("provider_name", ""))
-                    if not provider_name:
-                        continue
-                    address_line = clean_text(item.get("address", ""))
-                    result_city = clean_text(item.get("city", "")) or city
-                    zip_code = normalize_zip(item.get("zip", ""))
-                    container_text = clean_text(item.get("text", ""))
-                    address_value = ", ".join(
-                        part for part in [address_line, result_city or city, "NJ", zip_code] if clean_text(part)
-                    )
-                    row_index = str(item.get("row_index", ""))
-                    if clean_text(str(item.get("has_select", ""))).lower() not in {"true", "1"}:
-                        continue
-                    results.append(
-                        {
-                            "provider_name": provider_name,
-                            "address": address_value,
-                            "city": result_city or city,
-                            "zip": zip_code,
-                            "phone": "",
-                            "row_index": row_index,
-                        }
-                    )
-                if results:
-                    LOGGER.info(
-                        "New Jersey portal returned %s candidate rows for PID=%s using provider_variant=%s",
-                        len(results),
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    return results
-                self.finalize_state_portal_query("NJ", portal_url)
-            LOGGER.info("New Jersey portal returned 0 candidate rows for PID=%s", record.get("PID", ""))
-            return []
-        except Exception:
-            self.reset_state_portal_driver("NJ")
-            raise
-
-    def fetch_new_jersey_detail_page(
-        self,
-        driver: webdriver.Chrome,
-        row_index: str,
-        action_label: str,
-        record: Dict[str, str],
-    ) -> Dict[str, str]:
-        LOGGER.info("Fetching New Jersey detail page via Selenium action=%s row_index=%s", action_label, row_index)
-        rows = WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-            lambda d: d.find_elements(By.CSS_SELECTOR, "#grdUsers tbody.ui-datatable-data tr")
-        )
-        index = int(row_index)
-        if index < 0 or index >= len(rows):
-            raise RuntimeError(f"New Jersey row_index={row_index} is out of bounds for {len(rows)} rows")
-        row = rows[index]
-        button = row.find_element(By.CSS_SELECTOR, "button.btn-sm, a.btn-sm, button, a, input[type='button'], input[type='submit']")
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
-        time.sleep(0.5)
-        try:
-            button.click()
-        except Exception:
-            LOGGER.info("Normal Selenium click failed for New Jersey row_index=%s; trying JS click", row_index)
-            driver.execute_script("arguments[0].click();", button)
-        WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-            lambda d: "/provider-details/" in clean_text(d.current_url)
-            or d.execute_script(
-                """
-const phoneBlock = Array.from(document.querySelectorAll('.labelIt')).find(
-  el => ((el.innerText || '').toLowerCase().includes('phone')) && el.querySelector('a[href^="tel:"]')
-);
-const ageBlock = Array.from(document.querySelectorAll('.panel-footer h3, .panel-footer, h3')).find(
-  el => (el.innerText || '').toLowerCase().includes('ages served')
-);
-return !!phoneBlock || !!ageBlock;
-"""
-            )
-        )
-        WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-            lambda d: d.execute_script(
-                """
-const phoneBlock = Array.from(document.querySelectorAll('.labelIt')).find(
-  el => ((el.innerText || '').toLowerCase().includes('phone')) && el.querySelector('a[href^="tel:"]')
-);
-const ageBlock = Array.from(document.querySelectorAll('.panel-footer h3, .panel-footer, h3')).find(
-  el => (el.innerText || '').toLowerCase().includes('ages served')
-);
-return !!phoneBlock || !!ageBlock;
-"""
-            )
-        )
-        WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-            lambda d: d.execute_script(
-                """
-const bodyText = (document.body && document.body.innerText) || '';
-return bodyText.includes('Ages Served') || bodyText.includes('Phone');
-"""
-            )
-        )
-        time.sleep(1.0)
-        soup = BeautifulSoup(driver.page_source, "html.parser")
-        provider_panel = soup.select_one("portal-provider-header .panel.panel-info") or soup.select_one(
-            "portal-provider-header"
-        )
-        panel_soup = provider_panel if provider_panel is not None else soup
-
-        labeled_values: Dict[str, str] = {}
-        for block in panel_soup.select(".labelIt"):
-            label_node = block.find("strong")
-            label = clean_text(label_node.get_text(" ", strip=True) if label_node else "").rstrip(":").lower()
-            if not label:
-                continue
-            for node in block.find_all("strong"):
-                node.extract()
-            value = clean_text(block.get_text(" ", strip=True))
-            if value and "no " in value.lower() and " on record" in value.lower():
-                value = ""
-            labeled_values[label] = value
-
-        def extract_labeled_value(label: str) -> str:
-            direct = clean_text(labeled_values.get(label.lower(), ""))
-            return "" if ("no " in direct.lower() and " on record" in direct.lower()) else direct
-
-        detail_phone = ""
-        phone_block = next(
-            (
-                block
-                for block in panel_soup.select(".labelIt")
-                if clean_text((block.find("strong").get_text(" ", strip=True) if block.find("strong") else "")).lower()
-                == "phone"
-            ),
-            None,
-        )
-        if phone_block is not None:
-            phone_link = phone_block.select_one("a[href^='tel:']")
-            if phone_link:
-                detail_phone = normalize_phone(phone_link.get_text(" ", strip=True) or phone_link.get("href", ""))
-        if not detail_phone:
-            try:
-                phone_xpath = "/html/body/app-root/div/main/div/portal-provider-details/div/div[2]/div/p-accordion/div/p-accordiontab[1]/div[2]/div/div/div/portal-provider-header/div/div[2]/div/div/div/div[3]/span/a"
-                phone_node = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.XPATH, phone_xpath))
-                )
-                detail_phone = normalize_phone(phone_node.text or phone_node.get_attribute("href") or "")
-            except Exception:
-                detail_phone = ""
-
-        detail_age = ""
-        for node in panel_soup.select(".panel-footer h3, .panel-footer, h3"):
-            node_text = clean_text(node.get_text(" ", strip=True))
-            if not node_text or "ages served" not in node_text.lower():
-                continue
-            detail_age = re.sub(r"^\s*Ages Served\s*", "", node_text, flags=re.IGNORECASE).strip(" :-")
-            if detail_age:
-                break
-        if not detail_age:
-            try:
-                age_xpath = "/html/body/app-root/div/main/div/portal-provider-details/div/div[2]/div/p-accordion/div/p-accordiontab[1]/div[2]/div/div/div/portal-provider-header/div/div[3]/h3"
-                age_node = WebDriverWait(driver, 5).until(
-                    EC.presence_of_element_located((By.XPATH, age_xpath))
-                )
-                age_text = clean_text(age_node.text)
-                detail_age = re.sub(r"^\s*Ages Served\s*", "", age_text, flags=re.IGNORECASE).strip(" :-")
-            except Exception:
-                detail_age = ""
-
-        detail_values = {
-            "Mailing_Address": "",
-            "Mailing_Zip": "",
-            "Telephone": detail_phone,
-            "Detail_URL": normalize_url(driver.current_url),
-            "Capacity (optional)": extract_labeled_value("capacity"),
-            "Age Range (optional)": normalize_age_groups_text_to_numeric_range(detail_age or extract_labeled_value("Ages Served")),
-        }
-        LOGGER.info("New Jersey detail page parsed url=%s values=%s", driver.current_url, detail_values)
-        return detail_values
-
-    def enrich_from_new_jersey_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        try:
-            candidates = self.search_new_jersey_portal(record)
-        except Exception:
-            LOGGER.exception("New Jersey portal search failed for PID=%s", record.get("PID", ""))
-            return {}, {}
-        if not candidates:
-            return {}, {}
-        profile = get_record_name_profile(record)
-        best_candidate = None
-        best_score = -999
-        best_city_match = False
-        best_overlap = 0.0
-        for candidate in candidates:
-            provider_name = clean_text(candidate.get("provider_name", ""))
-            shared, recall, _ = token_overlap_metrics(record.get("Daycare_Name", ""), provider_name)
-            score = shared * 4
-            city_match = clean_text(record.get("Mailing_City")).lower() == clean_text(candidate.get("city", "")).lower()
-            if city_match:
-                score += 3
-            variant_hit = any(
-                clean_text(variant)
-                and len(clean_text(variant)) >= 4
-                and clean_text(variant).lower() in provider_name.lower()
-                for variant in profile.search_name_variants[:4]
-            )
-            if variant_hit:
-                score += 4
-            LOGGER.info(
-                "New Jersey portal candidate scored %s for PID=%s provider=%s overlap=%.3f city_match=%s",
-                score,
-                record.get("PID", ""),
-                provider_name,
-                recall,
-                city_match,
-            )
-            if score > best_score:
-                best_score = score
-                best_candidate = candidate
-                best_city_match = city_match
-                best_overlap = recall
-        if not best_candidate:
-            return {}, {}
-        if best_score < 6 and not (best_city_match and best_overlap >= 0.35):
-            LOGGER.warning(
-                "New Jersey portal rejected best candidate for PID=%s provider=%s score=%s overlap=%.3f city_match=%s",
-                record.get("PID", ""),
-                best_candidate.get("provider_name", ""),
-                best_score,
-                best_overlap,
-                best_city_match,
-            )
-            return {}, {}
-        driver = self.get_state_portal_driver("NJ")
-        try:
-            detail_values = self.fetch_new_jersey_detail_page(
-                driver=driver,
-                row_index=best_candidate.get("row_index", ""),
-                action_label=f"new jersey detail page [{record.get('PID', '')}]",
-                record=record,
-            )
-        except Exception:
-            LOGGER.exception("New Jersey detail page fetch failed for PID=%s", record.get("PID", ""))
-            detail_values = {}
-        finally:
-            self.finalize_state_portal_query("NJ", "https://childcareexplorer.njccis.com/portal/")
-        values = {
-            "Mailing_Address": clean_text(best_candidate.get("address", "")),
-            "Mailing_Zip": normalize_zip(best_candidate.get("zip", "")),
-            "Telephone": normalize_phone(detail_values.get("Telephone", "")),
-            "URL": "",
-            "Capacity (optional)": clean_text(detail_values.get("Capacity (optional)", "")),
-            "Age Range (optional)": normalize_age_groups_text_to_numeric_range(detail_values.get("Age Range (optional)", "")),
-        }
-        matched_provider_name = clean_text(best_candidate.get("provider_name", ""))
-        match_status, match_confidence, match_reason = classify_match_status(
-            record,
-            candidate_name=matched_provider_name,
-            candidate_city=clean_text(best_candidate.get("city", "")),
-            candidate_address=values.get("Mailing_Address", ""),
-            candidate_phone=values.get("Telephone", ""),
-            candidate_url=clean_text(detail_values.get("Detail_URL", "")),
-        )
-        values.update(
-            {
-                "Matched_Provider_Name": matched_provider_name,
-                "Match_Status": match_status,
-                "Match_Confidence": match_confidence,
-                "Matched_Reason": match_reason,
-            }
-        )
-        source_url = clean_text(detail_values.get("Detail_URL", "")) or "https://childcareexplorer.njccis.com/portal/"
-        sources = {
-            field: build_source_entry(
-                value=value,
-                source_url=source_url,
-                source_type="official_state_portal",
-                notes="New Jersey official childcare portal",
-            )
-            for field, value in values.items()
-            if clean_text(value)
-        }
-        return values, sources
-
-    def try_select_north_carolina_city(self, driver: webdriver.Chrome, city: str) -> bool:
-        city = clean_text(city)
-        if not city:
-            return False
-        city_input = driver.find_element(By.XPATH, '//*[@id="dnn_ctr1464_View_cboCity_Input"]')
-        city_input.send_keys(Keys.CONTROL, "a")
-        city_input.send_keys(Keys.DELETE)
-        city_input.send_keys(city)
-        time.sleep(1.0)
-
-        # First try the common combo-box keyboard path.
-        try:
-            city_input.send_keys(Keys.ARROW_DOWN)
-            time.sleep(0.3)
-            city_input.send_keys(Keys.ENTER)
-            time.sleep(0.8)
-            current_value = clean_text(city_input.get_attribute("value") or city_input.get_attribute("title") or city_input.text)
-            if current_value.lower() == city.lower():
-                return True
-        except Exception:
-            pass
-
-        dropdown_exact_xpaths = [
-            f"//*[contains(@id,'dnn_ctr1464_View_cboCity_DropDown')]//*[self::li or self::div or self::td or self::span][normalize-space()={json.dumps(city)}]",
-            f"//*[contains(@id,'dnn_ctr1464_View_cboCity_DropDown')]//*[self::li or self::div or self::td or self::span][contains(normalize-space(), {json.dumps(city)})]",
-            f"//*[contains(@id,'dnn_ctr1464_View_cboCity')]//*[self::li or self::div or self::td or self::span][normalize-space()={json.dumps(city)}]",
-        ]
-        for xpath in dropdown_exact_xpaths:
-            try:
-                candidate = WebDriverWait(driver, 3).until(
-                    EC.element_to_be_clickable((By.XPATH, xpath))
-                )
-                driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'});", candidate)
-                try:
-                    candidate.click()
-                except Exception:
-                    driver.execute_script("arguments[0].click();", candidate)
-                time.sleep(0.8)
-                current_value = clean_text(city_input.get_attribute("value") or city_input.get_attribute("title") or city_input.text)
-                if current_value.lower() == city.lower():
-                    return True
-            except Exception:
-                continue
-
-        dropdown_candidates = driver.find_elements(
-            By.XPATH,
-            (
-                "//*[contains(@id,'dnn_ctr1464_View_cboCity_DropDown')]"
-                "//*[self::li or self::div or self::td or self::span]"
-            ),
-        )
-        for candidate in dropdown_candidates:
-            candidate_text = clean_text(candidate.text)
-            if candidate_text.lower() != city.lower():
-                continue
-            try:
-                driver.execute_script("arguments[0].scrollIntoView({block: 'nearest'});", candidate)
-                candidate.click()
-            except Exception:
-                try:
-                    driver.execute_script("arguments[0].click();", candidate)
-                except Exception:
-                    continue
-            time.sleep(0.5)
-            current_value = clean_text(city_input.get_attribute("value") or city_input.get_attribute("title") or city_input.text)
-            if current_value.lower() == city.lower():
-                return True
-
-        city_input.send_keys(Keys.CONTROL, "a")
-        city_input.send_keys(Keys.DELETE)
-        return False
-
-    def search_north_carolina_portal(self, record: Dict[str, str]) -> List[Dict[str, str]]:
-        profile = get_record_name_profile(record)
-        city = clean_text(record.get("Mailing_City"))
-        portal_url = "https://ncchildcare.ncdhhs.gov/childcaresearch"
-        table_id = "dnn_ctr1464_View_rgSearchResults_ctl00"
-        no_results_xpath = "/html/body/form/div[6]/div[3]/div[3]/div/div[1]/div/div[2]/div[2]/div[1]/div[2]/div"
-        nc_wait_timeout = max(SELENIUM_WAIT_TIMEOUT, 45)
-        try:
-            for variant in profile.search_name_variants[:4]:
-                driver = self.open_state_portal_query_tab("NC", portal_url)
-                LOGGER.info(
-                    "Reloading North Carolina portal landing page for PID=%s before provider_variant=%s",
-                    record.get("PID", ""),
-                    variant,
-                )
-                WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                    EC.presence_of_element_located((By.XPATH, '//*[@id="dnn_ctr1464_View_txtFacilityName"]'))
-                )
-                time.sleep(1.0)
-                provider_input = driver.find_element(By.XPATH, '//*[@id="dnn_ctr1464_View_txtFacilityName"]')
-                provider_input.clear()
-                provider_input.send_keys(variant)
-                city_selected = self.try_select_north_carolina_city(driver, city)
-                if city_selected:
-                    LOGGER.info(
-                        "North Carolina portal selected dropdown city=%s for PID=%s",
-                        city,
-                        record.get("PID", ""),
-                    )
-                else:
-                    LOGGER.info(
-                        "North Carolina portal could not match city=%s in dropdown for PID=%s; searching without city filter",
-                        city,
-                        record.get("PID", ""),
-                    )
-                LOGGER.info(
-                    "North Carolina portal searching PID=%s with provider_variant=%s city=%s",
-                    record.get("PID", ""),
-                    variant,
-                    city,
-                )
-                driver.find_element(By.XPATH, '//*[@id="dnn_ctr1464_View_btnSearch"]').click()
-                WebDriverWait(driver, nc_wait_timeout).until(
-                    lambda d: d.execute_script(
-                        """
-const table = document.getElementById(arguments[0]);
-const noResultsNode = document.evaluate(arguments[1], document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-if (noResultsNode) {
-  const msg = (noResultsNode.innerText || '').trim().toLowerCase();
-  if (msg.includes('the search did not return any results')) return true;
-}
-if (!table) return false;
-const visible = table.offsetParent !== null;
-const resultLink = table.querySelector('tbody tr td a, tr td a');
-return visible && !!resultLink;
-""",
-                        table_id,
-                        no_results_xpath,
-                    )
-                )
-                no_results_text = ""
-                try:
-                    no_results_node = driver.find_element(By.XPATH, no_results_xpath)
-                    no_results_text = clean_text(no_results_node.text)
-                except Exception:
-                    no_results_text = ""
-                if "the search did not return any results" in no_results_text.lower():
-                    LOGGER.info(
-                        "North Carolina portal returned explicit no-results banner for PID=%s using provider_variant=%s",
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    self.finalize_state_portal_query("NC", portal_url)
-                    continue
-                time.sleep(2.0)
-                candidate_rows = driver.execute_script(
-                    """
-const table = document.getElementById(arguments[0]);
-if (!table) return [];
-const rows = [];
-Array.from(table.querySelectorAll('tbody tr, tr')).forEach((row, rowIndex) => {
-  const cells = Array.from(row.querySelectorAll('td'));
-  const rowText = (row.innerText || '').trim();
-  if (!rowText || rowText.toLowerCase().includes('no records')) return;
-  const cellTexts = cells.map(cell => ((cell.innerText || '').trim()));
-  const links = Array.from(row.querySelectorAll('a'));
-  const meaningfulLinks = links
-    .map(link => ((link.innerText || '').trim()))
-    .filter(text => text && !/^\d+$/.test(text));
-  let providerName = '';
-  if (meaningfulLinks.length) {
-    providerName = meaningfulLinks.sort((a, b) => b.length - a.length)[0];
-  } else if (cellTexts.length > 1) {
-    providerName = cellTexts[1];
-  } else if (cellTexts.length) {
-    providerName = cellTexts[0];
-  }
-  if (!providerName) return;
-  rows.push({
-    row_index: rows.length,
-    dom_row_index: rowIndex,
-    provider_name: providerName,
-    row_text: rowText,
-    cell_texts: cellTexts
-  });
-});
-return rows;
-""",
-                    table_id,
-                )
-                results: List[Dict[str, str]] = []
-                for item in candidate_rows or []:
-                    provider_name = clean_text(item.get("provider_name", ""))
-                    if not provider_name:
-                        continue
-                    row_text = clean_text(item.get("row_text", ""))
-                    cell_texts = [clean_text(value) for value in (item.get("cell_texts") or []) if clean_text(value)]
-                    city_match = city.lower() in row_text.lower() if city else False
-                    results.append(
-                        {
-                            "provider_name": provider_name,
-                            "row_index": str(item.get("row_index", "")),
-                            "row_text": row_text,
-                            "city": city if city_match else "",
-                            "cell_texts": " || ".join(cell_texts),
-                        }
-                    )
-                if results:
-                    LOGGER.info(
-                        "North Carolina portal returned %s candidate rows for PID=%s using provider_variant=%s",
-                        len(results),
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    return results
-                self.finalize_state_portal_query("NC", portal_url)
-            LOGGER.info("North Carolina portal returned 0 candidate rows for PID=%s", record.get("PID", ""))
-            return []
-        except Exception:
-            self.reset_state_portal_driver("NC")
-            raise
-
-    def fetch_north_carolina_detail_page(
-        self,
-        driver: webdriver.Chrome,
-        row_index: str,
-        action_label: str,
-        record: Dict[str, str],
-    ) -> Dict[str, str]:
-        LOGGER.info("Fetching North Carolina detail page via Selenium action=%s row_index=%s", action_label, row_index)
-        rows = WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-            lambda d: d.find_elements(By.CSS_SELECTOR, "#dnn_ctr1464_View_rgSearchResults_ctl00 tr")
-        )
-        candidate_rows = [row for row in rows if row.find_elements(By.TAG_NAME, "a")]
-        index = int(row_index)
-        if index < 0 or index >= len(candidate_rows):
-            raise RuntimeError(
-                f"North Carolina row_index={row_index} is out of bounds for {len(candidate_rows)} candidate rows"
-            )
-        row = candidate_rows[index]
-        detail_link = row.find_element(By.TAG_NAME, "a")
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", detail_link)
-        time.sleep(0.5)
-        try:
-            detail_link.click()
-        except Exception:
-            LOGGER.info("Normal Selenium click failed for North Carolina row_index=%s; trying JS click", row_index)
-            driver.execute_script("arguments[0].click();", detail_link)
-
-        address_xpath = "/html/body/form/div[6]/div[3]/div[3]/div/div[1]/div/div[2]/div[2]/div[3]/div/div[2]/div/div/div[3]/div[2]"
-        phone_xpath = "/html/body/form/div[6]/div[3]/div[3]/div/div[1]/div/div[2]/div[2]/div[3]/div/div[2]/div/div/div[7]/div[2]"
-        license_tab_xpath = "/html/body/form/div[6]/div[3]/div[3]/div/div[1]/div/div[2]/div[2]/div[3]/div/div[3]"
-        age_id = "dnn_ctr1464_View_FacilityDetail_rptLicenseInfo_lblAgeRange_0"
-        capacity_id = "dnn_ctr1464_View_FacilityDetail_rptLicenseInfo_lblFirstShiftCapacity_0"
-
-        WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-            EC.presence_of_element_located((By.XPATH, address_xpath))
-        )
-        WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-            EC.presence_of_element_located((By.XPATH, phone_xpath))
-        )
-        time.sleep(1.0)
-
-        address_text = clean_text(driver.find_element(By.XPATH, address_xpath).text)
-        phone_text = normalize_phone(driver.find_element(By.XPATH, phone_xpath).text)
-
-        try:
-            license_tab = driver.find_element(By.XPATH, license_tab_xpath)
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", license_tab)
-            license_tab.click()
-        except Exception:
-            try:
-                driver.execute_script("arguments[0].click();", driver.find_element(By.XPATH, license_tab_xpath))
-            except Exception:
-                LOGGER.info("North Carolina license information section click failed for PID=%s", record.get("PID", ""))
-
-        age_text = ""
-        capacity_text = ""
-        try:
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, age_id)))
-            age_node = driver.find_element(By.ID, age_id)
-            age_text = clean_text(
-                age_node.text
-                or age_node.get_attribute("innerText")
-                or age_node.get_attribute("textContent")
-                or age_node.get_attribute("innerHTML")
-            )
-        except Exception:
-            age_text = ""
-        try:
-            WebDriverWait(driver, 10).until(EC.presence_of_element_located((By.ID, capacity_id)))
-            capacity_node = driver.find_element(By.ID, capacity_id)
-            capacity_text = clean_text(
-                capacity_node.text or capacity_node.get_attribute("innerText") or capacity_node.get_attribute("textContent")
-            )
-        except Exception:
-            capacity_text = ""
-
-        normalized_age_text = normalize_age_groups_text_to_numeric_range(age_text)
-        if not normalized_age_text and age_text:
-            fallback_age = clean_text(age_text)
-            fallback_age = re.sub(r"\bthrough\b", " - ", fallback_age, flags=re.IGNORECASE)
-            fallback_age = re.sub(r"\bto\b", " - ", fallback_age, flags=re.IGNORECASE)
-            fallback_age = re.sub(r"\s*-\s*", " - ", fallback_age)
-            normalized_age_text = fallback_age
-        LOGGER.info(
-            "North Carolina detail raw age text for PID=%s age_text=%s normalized_age_text=%s",
-            record.get("PID", ""),
-            age_text,
-            normalized_age_text,
-        )
-
-        detail_values = {
-            "Mailing_Address": address_text,
-            "Mailing_Zip": normalize_zip(address_text),
-            "Telephone": phone_text,
-            "Detail_URL": normalize_url(driver.current_url),
-            "Capacity (optional)": capacity_text,
-            "Age Range (optional)": normalized_age_text,
-        }
-        LOGGER.info("North Carolina detail page parsed url=%s values=%s", driver.current_url, detail_values)
-        return detail_values
-
-    def enrich_from_north_carolina_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        try:
-            candidates = self.search_north_carolina_portal(record)
-        except Exception:
-            LOGGER.exception("North Carolina portal search failed for PID=%s", record.get("PID", ""))
-            return {}, {}
-        if not candidates:
-            return {}, {}
-        profile = get_record_name_profile(record)
-        best_candidate = None
-        best_score = -999
-        best_city_match = False
-        best_overlap = 0.0
-        for candidate in candidates:
-            provider_name = clean_text(candidate.get("provider_name", ""))
-            shared, recall, _ = token_overlap_metrics(record.get("Daycare_Name", ""), provider_name)
-            score = shared * 4
-            city_match = clean_text(record.get("Mailing_City")).lower() in clean_text(candidate.get("row_text", "")).lower()
-            if city_match:
-                score += 3
-            variant_hit = any(
-                clean_text(variant)
-                and len(clean_text(variant)) >= 4
-                and clean_text(variant).lower() in provider_name.lower()
-                for variant in profile.search_name_variants[:4]
-            )
-            if variant_hit:
-                score += 4
-            LOGGER.info(
-                "North Carolina portal candidate scored %s for PID=%s provider=%s overlap=%.3f city_match=%s",
-                score,
-                record.get("PID", ""),
-                provider_name,
-                recall,
-                city_match,
-            )
-            if score > best_score:
-                best_score = score
-                best_candidate = candidate
-                best_city_match = city_match
-                best_overlap = recall
-        if not best_candidate:
-            return {}, {}
-        if best_score < 6 and not (best_city_match and best_overlap >= 0.35):
-            LOGGER.warning(
-                "North Carolina portal rejected best candidate for PID=%s provider=%s score=%s overlap=%.3f city_match=%s",
-                record.get("PID", ""),
-                best_candidate.get("provider_name", ""),
-                best_score,
-                best_overlap,
-                best_city_match,
-            )
-            return {}, {}
-        driver = self.get_state_portal_driver("NC")
-        try:
-            detail_values = self.fetch_north_carolina_detail_page(
-                driver=driver,
-                row_index=best_candidate.get("row_index", ""),
-                action_label=f"north carolina detail page [{record.get('PID', '')}]",
-                record=record,
-            )
-        except Exception:
-            LOGGER.exception("North Carolina detail page fetch failed for PID=%s", record.get("PID", ""))
-            detail_values = {}
-        finally:
-            self.finalize_state_portal_query("NC", "https://ncchildcare.ncdhhs.gov/childcaresearch")
-        values = {
-            "Mailing_Address": clean_text(detail_values.get("Mailing_Address", "")),
-            "Mailing_Zip": normalize_zip(detail_values.get("Mailing_Zip", "") or detail_values.get("Mailing_Address", "")),
-            "Telephone": normalize_phone(detail_values.get("Telephone", "")),
-            "URL": "",
-            "Capacity (optional)": clean_text(detail_values.get("Capacity (optional)", "")),
-            "Age Range (optional)": (
-                format_numeric_age_range(*[part.strip() for part in clean_text(detail_values.get("Age Range (optional)", "")).split("-", 1)], unit="years")
-                if re.fullmatch(r"\s*\d+(?:\.\d+)?\s*-\s*\d+(?:\.\d+)?\s*", clean_text(detail_values.get("Age Range (optional)", "")))
-                else normalize_age_groups_text_to_numeric_range(detail_values.get("Age Range (optional)", ""))
-            ),
-        }
-        matched_provider_name = clean_text(best_candidate.get("provider_name", ""))
-        match_status, match_confidence, match_reason = classify_match_status(
-            record,
-            candidate_name=matched_provider_name,
-            candidate_city=clean_text(record.get("Mailing_City", "")) if best_city_match else "",
-            candidate_address=values.get("Mailing_Address", ""),
-            candidate_phone=values.get("Telephone", ""),
-            candidate_url=clean_text(detail_values.get("Detail_URL", "")),
-        )
-        values.update(
-            {
-                "Matched_Provider_Name": matched_provider_name,
-                "Match_Status": match_status,
-                "Match_Confidence": match_confidence,
-                "Matched_Reason": match_reason,
-            }
-        )
-        source_url = clean_text(detail_values.get("Detail_URL", "")) or "https://ncchildcare.ncdhhs.gov/childcaresearch"
-        sources = {
-            field: build_source_entry(
-                value=value,
-                source_url=source_url,
-                source_type="official_state_portal",
-                notes="North Carolina official childcare portal",
-            )
-            for field, value in values.items()
-            if clean_text(value)
-        }
-        return values, sources
-
-    def search_arizona_portal(self, record: Dict[str, str]) -> List[Dict[str, str]]:
-        profile = get_record_name_profile(record)
-        city = clean_text(record.get("Mailing_City"))
-        portal_url = "https://azchildcaresearch.azdes.gov/s/providersearch?language=en_US"
-        toast_xpath = "/html/body/div[4]/div[1]/div/div"
-        results_xpath = "/html/body/div[3]/div[2]/div/div/div/div[1]/c-pvm-hero-section-provider-search-new-view/section/div[1]/lightning-layout"
-        try:
-            for variant in profile.search_name_variants[:4]:
-                driver = self.open_state_portal_query_tab("AZ", portal_url)
-                LOGGER.info(
-                    "Arizona portal searching PID=%s with provider_variant=%s city=%s",
-                    record.get("PID", ""),
-                    variant,
-                    city,
-                )
-                WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-                    EC.presence_of_element_located(
-                        (
-                            By.XPATH,
-                            "/html/body/div[3]/div[2]/div/div/div/div[1]/c-pvm-hero-section-provider-search-new-view/c-pvm-header-component-application/header/div[1]/nav/div/div[3]/input",
-                        )
-                    )
-                )
-                city_input = driver.find_element(
-                    By.XPATH,
-                    "/html/body/div[3]/div[2]/div/div/div/div[1]/c-pvm-hero-section-provider-search-new-view/c-pvm-header-component-application/header/div[1]/nav/div/div[1]/div/input",
-                )
-                provider_input = driver.find_element(
-                    By.XPATH,
-                    "/html/body/div[3]/div[2]/div/div/div/div[1]/c-pvm-hero-section-provider-search-new-view/c-pvm-header-component-application/header/div[1]/nav/div/div[3]/input",
-                )
-                city_input.send_keys(Keys.CONTROL, "a")
-                city_input.send_keys(Keys.DELETE)
-                if city:
-                    city_input.send_keys(city)
-                provider_input.send_keys(Keys.CONTROL, "a")
-                provider_input.send_keys(Keys.DELETE)
-                provider_input.send_keys(variant)
-                baseline_signature = driver.execute_script(
-                    """
-const root = document.evaluate(arguments[0], document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-if (!root) return '';
-const names = Array.from(root.querySelectorAll('lightning-layout-item a'))
-  .map(node => ((node.innerText || node.textContent || '').trim()))
-  .filter(Boolean)
-  .slice(0, 10);
-return `${names.length}::${names.join('|')}`;
-""",
-                    results_xpath,
-                )
-                driver.find_element(
-                    By.XPATH,
-                    "/html/body/div[3]/div[2]/div/div/div/div[1]/c-pvm-hero-section-provider-search-new-view/c-pvm-header-component-application/header/div[1]/nav/div/button",
-                ).click()
-
-                WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-                    lambda d: d.execute_script(
-                        """
-const toast = document.evaluate(arguments[0], document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-if (toast && (toast.innerText || '').trim()) return true;
-const results = document.evaluate(arguments[1], document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-if (!results) return false;
-const names = Array.from(results.querySelectorAll('lightning-layout-item a'))
-  .map(node => ((node.innerText || node.textContent || '').trim()))
-  .filter(Boolean)
-  .slice(0, 10);
-const signature = `${names.length}::${names.join('|')}`;
-return !!names.length && signature !== arguments[2];
-""",
-                        toast_xpath,
-                        results_xpath,
-                        baseline_signature,
-                    )
-                )
-                toast_text = ""
-                try:
-                    toast_text = clean_text(driver.find_element(By.XPATH, toast_xpath).text)
-                except Exception:
-                    toast_text = ""
-                if toast_text and "no data" in toast_text.lower():
-                    LOGGER.info(
-                        "Arizona portal returned no-data toast for PID=%s using provider_variant=%s toast=%s",
-                        record.get("PID", ""),
-                        variant,
-                        toast_text,
-                    )
-                    self.finalize_state_portal_query("AZ")
-                    continue
-
-                time.sleep(2.0)
-                candidate_rows = driver.execute_script(
-                    """
-const root = document.evaluate(arguments[0], document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-if (!root) return [];
-const cards = Array.from(root.querySelectorAll('lightning-layout-item'));
-const results = [];
-cards.forEach((card, index) => {
-  const nameLink = card.querySelector('div a');
-  const addressLink = card.querySelector('a.multiline.provider-address-link');
-  const addressLine1Node = addressLink ? addressLink.querySelector('.addr-line1') : null;
-  const addressLine2Node = addressLink ? addressLink.querySelector('.addr-line2') : null;
-  const addressNode = card.querySelector('div div:nth-of-type(2) div:nth-of-type(1) p:nth-of-type(1) a span:nth-of-type(1)');
-  const phoneNode = card.querySelector('div div:nth-of-type(2) div:nth-of-type(1) p:nth-of-type(2) a');
-  const cardText = (card.innerText || '').trim();
-  const providerName = ((nameLink && nameLink.innerText) || '').trim();
-  if (!providerName) return;
-  const href = ((nameLink && nameLink.href) || '').trim();
-  const address = ((addressLine1Node && addressLine1Node.innerText) || (addressNode && addressNode.innerText) || '').trim();
-  const addressLine2 = ((addressLine2Node && addressLine2Node.innerText) || '').trim();
-  const phone = ((phoneNode && phoneNode.innerText) || '').trim();
-  let capacity = '';
-  const paragraphs = Array.from(card.querySelectorAll('p'));
-  for (const paragraph of paragraphs) {
-    const paragraphText = ((paragraph.innerText || '') + ' ' + (paragraph.textContent || '')).trim();
-    if (!/capacity/i.test(paragraphText)) continue;
-    const spans = Array.from(paragraph.querySelectorAll('span')).map(span => ((span.innerText || span.textContent || '').trim())).filter(Boolean);
-    if (spans.length >= 2) {
-      capacity = spans[spans.length - 1];
-      break;
-    }
-    const match = paragraphText.match(/capacity\s*:?\s*([0-9]+(?:\.[0-9]+)?)/i);
-    if (match) {
-      capacity = match[1];
-      break;
-    }
-  }
-  results.push({
-    candidate_index: index,
-    provider_name: providerName,
-    address: address,
-    address_line2: addressLine2,
-    city: arguments[1],
-    phone: phone,
-    capacity: capacity,
-    detail_url: href,
-    row_text: cardText
-  });
-});
-return results;
-""",
-                    results_xpath,
-                    city,
-                )
-                results: List[Dict[str, str]] = []
-                for item in candidate_rows or []:
-                    provider_name = clean_text(item.get("provider_name", ""))
-                    if not provider_name:
-                        continue
-                    raw_address_value = clean_text(item.get("address", ""))
-                    address_value = raw_address_value
-                    address_line2_value = clean_text(item.get("address_line2", ""))
-                    row_text = clean_text(item.get("row_text", ""))
-                    phone_value = normalize_phone(item.get("phone", ""))
-                    raw_capacity_value = clean_text(item.get("capacity", ""))
-                    capacity_match = re.search(r"\b\d+(?:\.\d+)?\b", raw_capacity_value)
-                    capacity_value = capacity_match.group(0) if capacity_match else ""
-                    href_value = clean_text(item.get("detail_url", ""))
-                    result_city = city
-                    zip_source = address_line2_value.split(",")[-1] if "," in address_line2_value else address_line2_value
-                    zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", zip_source or "")
-                    if not zip_match:
-                        zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", row_text or "")
-                    zip_code = zip_match.group(0) if zip_match else ""
-                    results.append(
-                        {
-                            "candidate_index": str(item.get("candidate_index", "")),
-                            "provider_name": provider_name,
-                            "address": address_value,
-                            "city": result_city,
-                            "zip": zip_code,
-                            "phone": phone_value,
-                            "capacity": capacity_value,
-                            "detail_url": href_value,
-                            "row_text": row_text,
-                        }
-                    )
-                if results:
-                    LOGGER.info(
-                        "Arizona portal returned %s candidate rows for PID=%s using provider_variant=%s",
-                        len(results),
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    return results
-                self.finalize_state_portal_query("AZ")
-            LOGGER.info("Arizona portal returned 0 candidate rows for PID=%s", record.get("PID", ""))
-            return []
-        except Exception:
-            self.reset_state_portal_driver("AZ")
-            raise
-
-    def fetch_arizona_detail_popup(
-        self,
-        driver: webdriver.Chrome,
-        candidate_index: str,
-        action_label: str,
-    ) -> Dict[str, str]:
-        try:
-            index_value = int(clean_text(candidate_index))
-        except (TypeError, ValueError):
-            raise RuntimeError(f"Invalid Arizona candidate_index={candidate_index!r}")
-        LOGGER.info(
-            "Fetching Arizona detail popup via Selenium action=%s candidate_index=%s",
-            action_label,
-            index_value,
-        )
-        popup_trigger_xpath = (
-            f"/html/body/div[3]/div[2]/div/div/div/div[1]/c-pvm-hero-section-provider-search-new-view/"
-            f"section/div[1]/lightning-layout/slot/lightning-layout-item/slot/lightning-layout/slot/"
-            f"lightning-layout-item[{index_value + 1}]/slot/div/div[1]"
-        )
-        popup_container_xpath = "//*[contains(@class,'popup-container') and contains(@class,'slide-in')]"
-        contact_info_xpath = "//*[contains(@class,'popup-container') and contains(@class,'slide-in')]//*[contains(@class,'contact-info')]"
-        trigger = WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-            EC.presence_of_element_located((By.XPATH, popup_trigger_xpath))
-        )
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", trigger)
-        time.sleep(0.5)
-        try:
-            trigger.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", trigger)
-        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-            EC.presence_of_element_located((By.XPATH, popup_container_xpath))
-        )
-        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-            EC.presence_of_element_located((By.XPATH, contact_info_xpath))
-        )
-        time.sleep(1.0)
-        contact_details = driver.execute_script(
-            """
-const popup = document.querySelector('.popup-container.slide-in');
-if (!popup) return {};
-const contactInfo = popup.querySelector('.contact-info');
-if (!contactInfo) return {};
-const addressLink = contactInfo.querySelector('p a');
-const addressText = ((addressLink && (addressLink.textContent || addressLink.innerText)) || '').trim();
-return {
-  address_text: addressText
-};
-"""
-        ) or {}
-        address_text = clean_text(contact_details.get("address_text", ""))
-        address_parts = [clean_text(part) for part in address_text.split(",") if clean_text(part)]
-        detail_values = {
-            "Mailing_Address": address_parts[0] if address_parts else "",
-            "Mailing_Zip": normalize_zip(address_parts[-1] if address_parts else ""),
-        }
-        LOGGER.info("Arizona detail popup parsed values=%s", detail_values)
-        return detail_values
-
-    def enrich_from_arizona_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        try:
-            candidates = self.search_arizona_portal(record)
-        except Exception:
-            LOGGER.exception("Arizona portal search failed for PID=%s", record.get("PID", ""))
-            return {}, {}
-        if not candidates:
-            return {}, {}
-        profile = get_record_name_profile(record)
-        best_candidate = None
-        best_score = -999
-        best_city_match = False
-        best_overlap = 0.0
-        for candidate in candidates:
-            provider_name = clean_text(candidate.get("provider_name", ""))
-            shared, recall, _ = token_overlap_metrics(record.get("Daycare_Name", ""), provider_name)
-            score = shared * 4
-            city_match = clean_text(record.get("Mailing_City")).lower() == clean_text(candidate.get("city", "")).lower()
-            if city_match:
-                score += 3
-            if clean_text(candidate.get("phone", "")):
-                score += 1
-            if clean_text(candidate.get("capacity", "")):
-                score += 1
-            variant_hit = any(
-                clean_text(variant)
-                and len(clean_text(variant)) >= 4
-                and clean_text(variant).lower() in provider_name.lower()
-                for variant in profile.search_name_variants[:4]
-            )
-            if variant_hit:
-                score += 4
-            LOGGER.info(
-                "Arizona portal candidate scored %s for PID=%s provider=%s overlap=%.3f city_match=%s",
-                score,
-                record.get("PID", ""),
-                provider_name,
-                recall,
-                city_match,
-            )
-            if score > best_score:
-                best_score = score
-                best_candidate = candidate
-                best_city_match = city_match
-                best_overlap = recall
-        if not best_candidate:
-            return {}, {}
-        if best_score < 6 and not (best_city_match and best_overlap >= 0.35):
-            LOGGER.warning(
-                "Arizona portal rejected best candidate for PID=%s provider=%s score=%s overlap=%.3f city_match=%s",
-                record.get("PID", ""),
-                best_candidate.get("provider_name", ""),
-                best_score,
-                best_overlap,
-                best_city_match,
-            )
-            self.finalize_state_portal_query("AZ")
-            return {}, {}
-        try:
-            driver = self.get_state_portal_driver("AZ")
-            try:
-                detail_values = self.fetch_arizona_detail_popup(
-                    driver=driver,
-                    candidate_index=best_candidate.get("candidate_index", ""),
-                    action_label=f"arizona detail popup [{record.get('PID', '')}]",
-                )
-            except Exception:
-                LOGGER.exception("Arizona detail popup fetch failed for PID=%s", record.get("PID", ""))
-                detail_values = {}
-            values = {
-                "Mailing_Address": clean_text(detail_values.get("Mailing_Address", "") or best_candidate.get("address", "")),
-                "Mailing_Zip": normalize_zip(detail_values.get("Mailing_Zip", "") or best_candidate.get("zip", "")),
-                "Telephone": normalize_phone(best_candidate.get("phone", "")),
-                "URL": clean_text(best_candidate.get("detail_url", "")),
-                "Capacity (optional)": clean_text(best_candidate.get("capacity", "")),
-                "Age Range (optional)": "",
-            }
-            matched_provider_name = clean_text(best_candidate.get("provider_name", ""))
-            match_status, match_confidence, match_reason = classify_match_status(
-                record,
-                candidate_name=matched_provider_name,
-                candidate_city=clean_text(best_candidate.get("city", "")),
-                candidate_address=values.get("Mailing_Address", ""),
-                candidate_phone=values.get("Telephone", ""),
-                candidate_url=values.get("URL", ""),
-            )
-            values.update(
-                {
-                    "Matched_Provider_Name": matched_provider_name,
-                    "Match_Status": match_status,
-                    "Match_Confidence": match_confidence,
-                    "Matched_Reason": match_reason,
-                }
-            )
-            source_url = values.get("URL", "") or "https://azchildcaresearch.azdes.gov/s/providersearch?language=en_US"
-            sources = {
-                field: build_source_entry(
-                    value=value,
-                    source_url=source_url,
-                    source_type="official_state_portal",
-                    notes="Arizona official childcare portal",
-                )
-                for field, value in values.items()
-                if clean_text(value)
-            }
-            return values, sources
-        finally:
-            self.finalize_state_portal_query("AZ")
-
-    def search_michigan_portal(self, record: Dict[str, str]) -> List[Dict[str, str]]:
-        profile = get_record_name_profile(record)
-        city = clean_text(record.get("Mailing_City"))
-        portal_url = "https://greatstarttoquality.org/find-programs/"
-        no_results_text = "Your search returned no matches, please check your search criteria and try again."
-        try:
-            for variant in profile.search_name_variants[:4]:
-                driver = self.open_state_portal_query_tab("MI", portal_url)
-                LOGGER.info(
-                    "Michigan portal searching PID=%s with provider_variant=%s",
-                    record.get("PID", ""),
-                    variant,
-                )
-                WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-                    EC.presence_of_element_located(
-                        (
-                            By.XPATH,
-                            "/html/body/div[2]/div/div/div/main/article/div[1]/div/div[3]/div/form/div[3]/div[2]/div/div[2]/div[2]/div/div/input",
-                        )
-                    )
-                )
-                provider_input = driver.find_element(
-                    By.XPATH,
-                    "/html/body/div[2]/div/div/div/main/article/div[1]/div/div[3]/div/form/div[3]/div[2]/div/div[2]/div[2]/div/div/input",
-                )
-                provider_input.send_keys(Keys.CONTROL, "a")
-                provider_input.send_keys(Keys.DELETE)
-                provider_input.send_keys(variant)
-                existing_handles = set(driver.window_handles)
-                submit_button = WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-                    EC.presence_of_element_located((By.XPATH, '//*[@id="submitAgency4ReferralForm"]'))
-                )
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", submit_button)
-                time.sleep(0.5)
-                try:
-                    WebDriverWait(driver, 5).until(
-                        EC.element_to_be_clickable((By.XPATH, '//*[@id="submitAgency4ReferralForm"]'))
-                    )
-                    submit_button.click()
-                except Exception:
-                    driver.execute_script("arguments[0].click();", submit_button)
-                WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-                    lambda d: len(set(d.window_handles) - existing_handles) >= 1
-                    or "UpdateReferral" in clean_text(d.current_url)
-                )
-                new_handles = [handle for handle in driver.window_handles if handle not in existing_handles]
-                if new_handles:
-                    driver.switch_to.window(new_handles[-1])
-                WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-                    EC.presence_of_element_located((By.TAG_NAME, "body"))
-                )
-                WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-                    lambda d: d.execute_script(
-                        """
-const body = document.body;
-const bodyText = ((body && (body.innerText || body.textContent)) || '').trim().toLowerCase();
-if (bodyText.includes(arguments[0])) return 'no_results';
-const root = document.getElementById('PSResults');
-if (!root) return false;
-const cards = root.querySelectorAll('.provider-panel.countTotal');
-if (cards.length > 0) return 'results';
-return false;
-""",
-                        no_results_text.lower(),
-                    )
-                )
-                body_text = clean_text(driver.find_element(By.TAG_NAME, "body").text)
-                if no_results_text.lower() in body_text.lower():
-                    LOGGER.info(
-                        "Michigan portal returned no matches for PID=%s using provider_variant=%s",
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    self.finalize_state_portal_query("MI")
-                    continue
-                time.sleep(1.5)
-                candidate_rows = driver.execute_script(
-                    """
-const root = document.getElementById('PSResults');
-if (!root) return [];
-const cards = Array.from(root.querySelectorAll('.provider-panel.countTotal'));
-const results = [];
-cards.forEach((card, index) => {
-  const nameLink = card.querySelector('a.moreINFO');
-  const name = ((nameLink && (nameLink.innerText || nameLink.textContent)) || '').trim();
-  if (!name) return;
-  const href = ((nameLink && nameLink.href) || '').trim();
-  const mapNode = card.querySelector('a.viewInMap');
-  const addressText = ((mapNode && mapNode.getAttribute('address')) || '').trim();
-  const cityText = ((mapNode && mapNode.getAttribute('city')) || '').trim();
-  const zipText = ((mapNode && mapNode.getAttribute('zip')) || '').trim();
-  const phoneText = ((mapNode && mapNode.getAttribute('phone')) || '').trim();
-  const ageTextAttr = ((mapNode && mapNode.getAttribute('ages')) || '').trim();
-  const infoDivs = Array.from(card.querySelectorAll('div'));
-  const capacityNode = infoDivs.find(node => {
-    const bold = node.querySelector('b');
-    const boldText = ((bold && (bold.innerText || bold.textContent)) || '').trim().toLowerCase();
-    return boldText === 'capacity';
-  });
-  const ageNode = infoDivs.find(node => {
-    const bold = node.querySelector('b');
-    const boldText = ((bold && (bold.innerText || bold.textContent)) || '').trim().toLowerCase();
-    return boldText === 'ages served';
-  });
-  const capacityText = ((capacityNode && (capacityNode.innerText || capacityNode.textContent)) || '').trim();
-  const ageText = ageTextAttr || ((ageNode && (ageNode.innerText || ageNode.textContent)) || '').trim();
-  results.push({
-    candidate_index: index,
-    provider_name: name,
-    detail_url: href,
-    address_text: addressText,
-    city_text: cityText,
-    zip_text: zipText,
-    phone: phoneText,
-    capacity: capacityText,
-    age: ageText,
-    row_text: (card.innerText || '').trim()
-  });
-});
-return results;
-"""
-                )
-                results: List[Dict[str, str]] = []
-                for item in candidate_rows or []:
-                    provider_name = clean_text(item.get("provider_name", ""))
-                    if not provider_name:
-                        continue
-                    address_text = clean_text(item.get("address_text", ""))
-                    parsed_city = clean_text(item.get("city_text", "")) or city
-                    parsed_zip = normalize_zip(item.get("zip_text", ""))
-                    row_text = clean_text(item.get("row_text", ""))
-                    if not address_text or any(label in address_text for label in [
-                        "Type:",
-                        "Capacity:",
-                        "Ages Served:",
-                        "In Operation:",
-                        "Licensing Inspection Report",
-                        "Program Quality Guide",
-                        "Program Details",
-                    ]):
-                        address_text = row_text
-                    if city and parsed_city and city.lower() != parsed_city.lower() and city.lower() not in address_text.lower():
-                        continue
-                    address_match = re.search(
-                        r"(\d{1,6}\s+.+?\b" + re.escape(parsed_city or city) + r"\b\s+MI\s+\d{5}(?:-\d{4})?)",
-                        address_text,
-                        re.IGNORECASE,
-                    )
-                    if not address_match:
-                        address_match = re.search(
-                            r"(\d{1,6}\s+.+?\bMI\b\s+\d{5}(?:-\d{4})?)",
-                            address_text,
-                            re.IGNORECASE,
-                        )
-                    address_block = clean_text(address_match.group(1)) if address_match else ""
-                    address_line = clean_text(address_block or address_text)
-                    if parsed_city and parsed_city.lower() in address_line.lower():
-                        address_line = re.split(r"\b" + re.escape(parsed_city) + r"\b", address_line, maxsplit=1, flags=re.IGNORECASE)[0].strip(" ,")
-                    zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", parsed_zip or address_block or address_text or row_text)
-                    raw_phone_text = clean_text(item.get("phone", "")) or row_text
-                    phone_value = normalize_phone(raw_phone_text)
-                    capacity_text = clean_text(item.get("capacity", ""))
-                    if not capacity_text:
-                        capacity_match = re.search(r"Capacity:\s*([0-9]+)", row_text, re.IGNORECASE)
-                        capacity_text = capacity_match.group(1) if capacity_match else ""
-                    age_text = clean_text(item.get("age", ""))
-                    if not age_text:
-                        age_match = re.search(
-                            r"Ages Served:\s*(.+?)(?=\s+(?:Monday\s*-\s*Friday|In Operation:|Licensing Inspection Report|Program Quality Guide|Free PreK|Message to Families:|Program Details|$))",
-                            row_text,
-                            re.IGNORECASE,
-                        )
-                        age_text = clean_text(age_match.group(1)) if age_match else ""
-                    results.append(
-                        {
-                            "provider_name": provider_name,
-                            "address": address_line,
-                            "city": parsed_city or city,
-                            "zip": parsed_zip or (zip_match.group(0) if zip_match else ""),
-                            "phone": phone_value,
-                            "capacity": re.sub(r"^\s*Capacity\s*:?\s*", "", capacity_text, flags=re.IGNORECASE).strip(),
-                            "age": re.sub(r"^\s*Ages?\s*:?\s*", "", age_text, flags=re.IGNORECASE).strip(),
-                            "detail_url": "" if clean_text(item.get("detail_url", "")).startswith("javascript:") else clean_text(item.get("detail_url", "")),
-                            "row_text": row_text,
-                        }
-                    )
-                if results:
-                    LOGGER.info(
-                        "Michigan portal returned %s candidate rows for PID=%s using provider_variant=%s",
-                        len(results),
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    return results
-                self.finalize_state_portal_query("MI")
-            LOGGER.info("Michigan portal returned 0 candidate rows for PID=%s", record.get("PID", ""))
-            return []
-        except Exception:
-            self.reset_state_portal_driver("MI")
-            raise
-
-    def enrich_from_michigan_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        try:
-            candidates = self.search_michigan_portal(record)
-        except Exception:
-            LOGGER.exception("Michigan portal search failed for PID=%s", record.get("PID", ""))
-            return {}, {}
-        if not candidates:
-            return {}, {}
-        profile = get_record_name_profile(record)
-        best_candidate = None
-        best_score = -999
-        best_city_match = False
-        best_overlap = 0.0
-        for candidate in candidates:
-            provider_name = clean_text(candidate.get("provider_name", ""))
-            shared, recall, _ = token_overlap_metrics(record.get("Daycare_Name", ""), provider_name)
-            score = shared * 4
-            city_match = clean_text(record.get("Mailing_City")).lower() == clean_text(candidate.get("city", "")).lower()
-            if city_match:
-                score += 3
-            if clean_text(candidate.get("phone", "")):
-                score += 1
-            if clean_text(candidate.get("capacity", "")):
-                score += 1
-            variant_hit = any(
-                clean_text(variant)
-                and len(clean_text(variant)) >= 4
-                and clean_text(variant).lower() in provider_name.lower()
-                for variant in profile.search_name_variants[:4]
-            )
-            if variant_hit:
-                score += 4
-            LOGGER.info(
-                "Michigan portal candidate scored %s for PID=%s provider=%s overlap=%.3f city_match=%s",
-                score,
-                record.get("PID", ""),
-                provider_name,
-                recall,
-                city_match,
-            )
-            if score > best_score:
-                best_score = score
-                best_candidate = candidate
-                best_city_match = city_match
-                best_overlap = recall
-        if not best_candidate:
-            return {}, {}
-        if best_score < 6 and not (best_city_match and best_overlap >= 0.35):
-            LOGGER.warning(
-                "Michigan portal rejected best candidate for PID=%s provider=%s score=%s overlap=%.3f city_match=%s",
-                record.get("PID", ""),
-                best_candidate.get("provider_name", ""),
-                best_score,
-                best_overlap,
-                best_city_match,
-            )
-            self.finalize_state_portal_query("MI")
-            return {}, {}
-        try:
-            values = {
-                "Mailing_Address": clean_text(best_candidate.get("address", "")),
-                "Mailing_Zip": normalize_zip(best_candidate.get("zip", "")),
-                "Telephone": normalize_phone(best_candidate.get("phone", "")),
-                "URL": clean_text(best_candidate.get("detail_url", "")),
-                "Capacity (optional)": clean_text(best_candidate.get("capacity", "")),
-                "Age Range (optional)": normalize_age_groups_text_to_numeric_range(best_candidate.get("age", "")),
-            }
-            matched_provider_name = clean_text(best_candidate.get("provider_name", ""))
-            match_status, match_confidence, match_reason = classify_match_status(
-                record,
-                candidate_name=matched_provider_name,
-                candidate_city=clean_text(best_candidate.get("city", "")),
-                candidate_address=values.get("Mailing_Address", ""),
-                candidate_phone=values.get("Telephone", ""),
-                candidate_url=values.get("URL", ""),
-            )
-            values.update(
-                {
-                    "Matched_Provider_Name": matched_provider_name,
-                    "Match_Status": match_status,
-                    "Match_Confidence": match_confidence,
-                    "Matched_Reason": match_reason,
-                }
-            )
-            source_url = values.get("URL", "") or "https://greatstarttoquality.org/find-programs/"
-            sources = {
-                field: build_source_entry(
-                    value=value,
-                    source_url=source_url,
-                    source_type="official_state_portal",
-                    notes="Michigan Great Start to Quality portal",
-                )
-                for field, value in values.items()
-                if clean_text(value)
-            }
-            return values, sources
-        finally:
-            self.finalize_state_portal_query("MI")
-
-    def search_minnesota_portal(self, record: Dict[str, str]) -> List[Dict[str, str]]:
-        profile = get_record_name_profile(record)
-        city = clean_text(record.get("Mailing_City"))
-        portal_url = "https://www.parentaware.org/search/#/"
-        no_results_text = "Showing 0 programs that match your search"
-        try:
-            for variant in profile.search_name_variants[:4]:
-                driver = self.open_state_portal_query_tab("MN", portal_url)
-                LOGGER.info(
-                    "Minnesota portal searching PID=%s with provider_variant=%s city=%s",
-                    record.get("PID", ""),
-                    variant,
-                    city,
-                )
-                WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-                    EC.presence_of_element_located((By.XPATH, '//*[@id="name-type"]'))
-                )
-                try:
-                    by_name_label = driver.find_element(
-                        By.XPATH,
-                        "//label[@for='name-type']",
-                    )
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", by_name_label)
-                    time.sleep(0.3)
-                    try:
-                        by_name_label.click()
-                    except Exception:
-                        driver.execute_script("arguments[0].click();", by_name_label)
-                    WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-                        lambda d: d.execute_script(
-                            """
-const radio = document.getElementById('name-type');
-const nameInput = document.getElementById('name');
-return !!radio && radio.checked && !!nameInput;
-"""
-                        )
-                    )
-                except Exception:
-                    LOGGER.debug("Minnesota By Name selector not clicked explicitly; continuing")
-                name_input = WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-                    EC.presence_of_element_located((By.XPATH, '//*[@id="name"]'))
-                )
-                name_input.send_keys(Keys.CONTROL, "a")
-                name_input.send_keys(Keys.DELETE)
-                name_input.send_keys(variant)
-                search_button = driver.find_element(
-                    By.XPATH,
-                    "/html/body/main/div/div/div/div[2]/form/button",
-                )
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", search_button)
-                time.sleep(0.3)
-                try:
-                    search_button.click()
-                except Exception:
-                    driver.execute_script("arguments[0].click();", search_button)
-                WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-                    lambda d: d.execute_script(
-                        """
-const bodyText = ((document.body && (document.body.innerText || document.body.textContent)) || '').trim();
-if (bodyText.includes(arguments[0])) return true;
-const container = document.querySelector('.search-results-list-container');
-if (!container) return false;
-return container.querySelectorAll('article.result-item').length > 0;
-""",
-                        no_results_text,
-                    )
-                )
-                body_text = clean_text(driver.find_element(By.TAG_NAME, "body").text)
-                if no_results_text.lower() in body_text.lower():
-                    LOGGER.info(
-                        "Minnesota portal returned no matches for PID=%s using provider_variant=%s",
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    self.finalize_state_portal_query("MN")
-                    continue
-
-                # Load the full result list before parsing.
-                while True:
-                    try:
-                        load_more_buttons = driver.find_elements(By.XPATH, "//button[contains(., 'Load More')]")
-                        visible_buttons = [button for button in load_more_buttons if button.is_displayed()]
-                        if not visible_buttons:
-                            break
-                        button = visible_buttons[0]
-                        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", button)
-                        time.sleep(0.5)
-                        existing_count = len(driver.find_elements(By.CSS_SELECTOR, "article.result-item"))
-                        try:
-                            button.click()
-                        except Exception:
-                            driver.execute_script("arguments[0].click();", button)
-                        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-                            lambda d: len(d.find_elements(By.CSS_SELECTOR, "article.result-item")) > existing_count
-                            or not any(btn.is_displayed() for btn in d.find_elements(By.XPATH, "//button[contains(., 'Load More')]"))
-                        )
-                        time.sleep(1.0)
-                    except Exception:
-                        break
-
-                candidate_rows = driver.execute_script(
-                    """
-const container = document.querySelector('.search-results-list-container');
-if (!container) return [];
-const cards = Array.from(container.querySelectorAll('article.result-item'));
-return cards.map((card, index) => {
-  const titleNode = card.querySelector('h2.title');
-  const titleText = ((titleNode && (titleNode.innerText || titleNode.textContent)) || '').trim();
-  const linkNode = titleNode ? titleNode.closest('a') : card.querySelector('a[href*="#/detail/"]');
-  const detailHref = ((linkNode && linkNode.getAttribute('href')) || '').trim();
-  const detailUrl = detailHref ? new URL(detailHref, window.location.href).href : '';
-  const addressNode = card.querySelector('.address');
-  const addressText = ((addressNode && (addressNode.innerText || addressNode.textContent)) || '').trim();
-  return {
-    candidate_index: index,
-    provider_name: titleText,
-    detail_url: detailUrl,
-    address_text: addressText,
-    row_text: (card.innerText || '').trim()
-  };
-});
-"""
-                )
-                results: List[Dict[str, str]] = []
-                for item in candidate_rows or []:
-                    provider_name = clean_text(item.get("provider_name", ""))
-                    if not provider_name:
-                        continue
-                    address_text = clean_text(item.get("address_text", ""))
-                    if city and city.lower() not in address_text.lower():
-                        continue
-                    address_lines = [clean_text(line) for line in address_text.splitlines() if clean_text(line)]
-                    street_line = address_lines[0] if address_lines else ""
-                    city_state_zip_line = address_lines[1] if len(address_lines) > 1 else ""
-                    phone_line = address_lines[2] if len(address_lines) > 2 else ""
-                    zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", city_state_zip_line)
-                    results.append(
-                        {
-                            "candidate_index": str(item.get("candidate_index", "")),
-                            "provider_name": provider_name,
-                            "address": street_line,
-                            "city": city,
-                            "zip": zip_match.group(0) if zip_match else "",
-                            "phone": normalize_phone(phone_line),
-                            "detail_url": clean_text(item.get("detail_url", "")),
-                            "row_text": clean_text(item.get("row_text", "")),
-                        }
-                    )
-                if results:
-                    LOGGER.info(
-                        "Minnesota portal returned %s candidate rows for PID=%s using provider_variant=%s",
-                        len(results),
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    return results
-                self.finalize_state_portal_query("MN")
-            LOGGER.info("Minnesota portal returned 0 candidate rows for PID=%s", record.get("PID", ""))
-            return []
-        except Exception:
-            self.reset_state_portal_driver("MN")
-            raise
-
-    def fetch_minnesota_detail_page(
-        self,
-        driver: webdriver.Chrome,
-        detail_url: str,
-        action_label: str,
-    ) -> Dict[str, str]:
-        LOGGER.info("Fetching Minnesota detail page via Selenium action=%s url=%s", action_label, detail_url)
-        existing_handles = set(driver.window_handles)
-        driver.execute_script("window.open(arguments[0], '_blank');", detail_url)
-        WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > len(existing_handles))
-        new_handles = [handle for handle in driver.window_handles if handle not in existing_handles]
-        if new_handles:
-            driver.switch_to.window(new_handles[-1])
-        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-            lambda d: d.find_elements(By.XPATH, "/html/body/main/div/div/div/div[2]/div[2]/div[1]/div")
-            or d.find_elements(By.XPATH, "/html/body/main/div/div/div/div[2]/div[3]/dl[1]/dd[1]")
-        )
-        time.sleep(1.0)
-        detail_values = driver.execute_script(
-            """
-const addressNode = document.evaluate('/html/body/main/div/div/div/div[2]/div[2]/div[1]/div', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-const phoneAnchor = document.querySelector('a[href^="tel:"]');
-const websiteNode = document.evaluate('/html/body/main/div/div/div/div[2]/div[1]/div[1]/div[3]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-const capacityNode = document.evaluate('/html/body/main/div/div/div/div[2]/div[3]/dl[1]/dd[1]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-const ageNode = document.evaluate('/html/body/main/div/div/div/div[2]/div[3]/dl[1]/dd[2]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-const addressLines = (() => {
-  if (!addressNode) return [];
-  const lines = [];
-  let current = '';
-  for (const node of addressNode.childNodes) {
-    if (node.nodeType === Node.TEXT_NODE) {
-      current += node.textContent || '';
-      continue;
-    }
-    if (node.nodeType === Node.ELEMENT_NODE && node.tagName === 'BR') {
-      if ((current || '').trim()) {
-        lines.push(current.trim());
-      }
-      current = '';
-      continue;
-    }
-    current += node.textContent || '';
-  }
-  if ((current || '').trim()) {
-    lines.push(current.trim());
-  }
-  return lines.filter(Boolean);
-})();
-return {
-  address_html: addressNode ? addressNode.innerHTML : '',
-  address_text: addressNode ? (addressNode.innerText || addressNode.textContent || '') : '',
-  address_lines: addressLines,
-  phone_text: phoneAnchor ? (phoneAnchor.innerText || phoneAnchor.textContent || '') : '',
-  website_text: websiteNode ? (websiteNode.innerText || websiteNode.textContent || '') : '',
-  website_href: (() => {
-    if (!websiteNode) return '';
-    const anchor = websiteNode.querySelector('a');
-    return anchor ? (anchor.href || anchor.getAttribute('href') || '') : '';
-  })(),
-  capacity_text: capacityNode ? (capacityNode.innerText || capacityNode.textContent || '') : '',
-  age_text: ageNode ? (ageNode.innerText || ageNode.textContent || '') : ''
-};
-"""
-        ) or {}
-        address_lines = [clean_text(line) for line in (detail_values.get("address_lines") or []) if clean_text(str(line))]
-        if not address_lines:
-            address_lines = [clean_text(line) for line in clean_text(detail_values.get("address_text", "")).splitlines() if clean_text(line)]
-        street_line = address_lines[0] if address_lines else ""
-        city_state_zip_line = address_lines[1] if len(address_lines) > 1 else ""
-        city_state_zip_tokens = city_state_zip_line.split()
-        zip_candidate = city_state_zip_tokens[-1] if city_state_zip_tokens else ""
-        zip_match = re.search(r"\b\d{5}(?:-\d{4})?\b", zip_candidate) or re.search(r"\b\d{5}(?:-\d{4})?\b", city_state_zip_line)
-        capacity_text = clean_text(detail_values.get("capacity_text", ""))
-        age_text = clean_text(detail_values.get("age_text", ""))
-        values = {
-            "Mailing_Address": street_line,
-            "Mailing_Zip": zip_match.group(0) if zip_match else "",
-            "Telephone": normalize_phone(detail_values.get("phone_text", "")),
-            "URL": clean_text(detail_values.get("website_href", "") or detail_values.get("website_text", "")),
-            "Capacity (optional)": clean_text(capacity_text.split(" ", 1)[0] if capacity_text else ""),
-            "Age Range (optional)": clean_text(age_text),
-        }
-        LOGGER.info("Minnesota detail page parsed url=%s values=%s", detail_url, values)
-        return values
-
-    def enrich_from_minnesota_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        portal_url = "https://www.parentaware.org/search/#/"
-        try:
-            candidates = self.search_minnesota_portal(record)
-        except Exception:
-            LOGGER.exception("Minnesota portal search failed for PID=%s", record.get("PID", ""))
-            return {}, {}
-        if not candidates:
-            return {}, {}
-        profile = get_record_name_profile(record)
-        best_candidate = None
-        best_score = -999
-        best_city_match = False
-        best_overlap = 0.0
-        for candidate in candidates:
-            provider_name = clean_text(candidate.get("provider_name", ""))
-            shared, recall, _ = token_overlap_metrics(record.get("Daycare_Name", ""), provider_name)
-            score = shared * 4
-            city_match = clean_text(record.get("Mailing_City")).lower() == clean_text(candidate.get("city", "")).lower()
-            if city_match:
-                score += 3
-            if clean_text(candidate.get("phone", "")):
-                score += 1
-            variant_hit = any(
-                clean_text(variant)
-                and len(clean_text(variant)) >= 4
-                and clean_text(variant).lower() in provider_name.lower()
-                for variant in profile.search_name_variants[:4]
-            )
-            if variant_hit:
-                score += 4
-            LOGGER.info(
-                "Minnesota portal candidate scored %s for PID=%s provider=%s overlap=%.3f city_match=%s",
-                score,
-                record.get("PID", ""),
-                provider_name,
-                recall,
-                city_match,
-            )
-            if score > best_score:
-                best_score = score
-                best_candidate = candidate
-                best_city_match = city_match
-                best_overlap = recall
-        if not best_candidate:
-            return {}, {}
-        if best_score < 6 and not (best_city_match and best_overlap >= 0.35):
-            LOGGER.warning(
-                "Minnesota portal rejected best candidate for PID=%s provider=%s score=%s overlap=%.3f city_match=%s",
-                record.get("PID", ""),
-                best_candidate.get("provider_name", ""),
-                best_score,
-                best_overlap,
-                best_city_match,
-            )
-            self.finalize_state_portal_query("MN")
-            return {}, {}
-        driver = self.get_state_portal_driver("MN")
-        try:
-            detail_values = self.fetch_minnesota_detail_page(
-                driver=driver,
-                detail_url=best_candidate.get("detail_url", ""),
-                action_label=f"minnesota detail page [{record.get('PID', '')}]",
-            )
-        except Exception:
-            LOGGER.exception("Minnesota detail page fetch failed for PID=%s", record.get("PID", ""))
-            detail_values = {}
-        finally:
-            self.finalize_state_portal_query("MN")
-        values = {
-            "Mailing_Address": clean_text(detail_values.get("Mailing_Address", "") or best_candidate.get("address", "")),
-            "Mailing_Zip": normalize_zip(detail_values.get("Mailing_Zip", "") or best_candidate.get("zip", "")),
-            "Telephone": normalize_phone(detail_values.get("Telephone", "") or best_candidate.get("phone", "")),
-            "URL": clean_text(detail_values.get("URL", "")),
-            "Capacity (optional)": clean_text(detail_values.get("Capacity (optional)", "")),
-            "Age Range (optional)": normalize_age_groups_text_to_numeric_range(detail_values.get("Age Range (optional)", "")),
-        }
-        matched_provider_name = clean_text(best_candidate.get("provider_name", ""))
-        match_status, match_confidence, match_reason = classify_match_status(
-            record,
-            candidate_name=matched_provider_name,
-            candidate_city=clean_text(best_candidate.get("city", "")),
-            candidate_address=values.get("Mailing_Address", ""),
-            candidate_phone=values.get("Telephone", ""),
-            candidate_url=values.get("URL", ""),
-        )
-        values.update(
-            {
-                "Matched_Provider_Name": matched_provider_name,
-                "Match_Status": match_status,
-                "Match_Confidence": match_confidence,
-                "Matched_Reason": match_reason,
-            }
-        )
-        source_url = values.get("URL", "") or best_candidate.get("detail_url", "") or portal_url
-        sources = {
-            field: build_source_entry(
-                value=value,
-                source_url=source_url,
-                source_type="official_state_portal",
-                notes="Minnesota Parent Aware portal",
-            )
-            for field, value in values.items()
-            if clean_text(value)
-        }
-        return values, sources
-
-    def search_new_hampshire_portal(self, record: Dict[str, str]) -> List[Dict[str, str]]:
-        profile = get_record_name_profile(record)
-        city = clean_text(record.get("Mailing_City"))
-        portal_url = "https://new-hampshire.my.site.com/nhccis/NH_ChildCareSearch"
-        no_results_text = "We're sorry we could not find any results based on this criteria. Please consider refining your search criteria and try again"
-        try:
-            for variant in profile.search_name_variants:
-                driver = self.open_or_reuse_state_portal_query_tab(
-                    "NH",
-                    portal_url,
-                    ready_locator=(By.XPATH, '//*[@id="j_id0:j_id3:j_id96:accountName"]'),
-                )
-                name_input = WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                    EC.presence_of_element_located((By.XPATH, '//*[@id="j_id0:j_id3:j_id96:accountName"]'))
-                )
-                city_select = driver.find_element(By.XPATH, '//*[@id="j_id0:j_id3:j_id96:city"]')
-                name_input.send_keys(Keys.CONTROL, "a")
-                name_input.send_keys(Keys.DELETE)
-                name_input.send_keys(variant)
-
-                selected_city = ""
-                try:
-                    options = city_select.find_elements(By.TAG_NAME, "option")
-                    for option in options:
-                        option_text = clean_text(option.text)
-                        if option_text and option_text.lower() == city.lower():
-                            option.click()
-                            selected_city = option_text
-                            break
-                    if not selected_city:
-                        for option in options:
-                            if clean_text(option.get_attribute("value")) == "":
-                                option.click()
-                                break
-                except Exception:
-                    selected_city = ""
-
-                LOGGER.info(
-                    "New Hampshire portal searching PID=%s with provider_variant=%s city=%s selected_city=%s",
-                    record.get("PID", ""),
-                    variant,
-                    city,
-                    selected_city,
-                )
-                search_button = driver.find_element(
-                    By.XPATH,
-                    '//*[@id="j_id0:j_id3:j_id96"]/div[2]/section/div/div[2]/div/div/div[1]/div[5]/button[1]',
-                )
-                try:
-                    search_button.click()
-                except Exception:
-                    driver.execute_script("arguments[0].click();", search_button)
-                time.sleep(1.0)
-                no_result = no_results_text.lower() in clean_text(driver.find_element(By.TAG_NAME, "body").text).lower()
-                if no_result:
-                    self.finalize_state_portal_query("NH")
-                    continue
-                WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-                    EC.presence_of_element_located((By.XPATH, '//*[@id="accountTable"]'))
-                )
-                candidate_rows = driver.execute_script(
-                    """
-const rows = [];
-document.querySelectorAll('#dtbody article > div > div').forEach((card, index) => {
-  const link = card.querySelector('div p a');
-  if (!link) return;
-  rows.push({
-    candidate_index: index,
-    provider_name: (link.innerText || link.textContent || '').trim(),
-    detail_url: link.href || link.getAttribute('href') || '',
-    row_text: (card.innerText || '').trim()
-  });
-});
-return rows;
-"""
-                )
-                results = []
-                for item in candidate_rows or []:
-                    provider_name = clean_text(item.get("provider_name", ""))
-                    if not provider_name:
-                        continue
-                    results.append(
-                        {
-                            "candidate_index": str(item.get("candidate_index", "")),
-                            "provider_name": provider_name,
-                            "detail_url": clean_text(item.get("detail_url", "")),
-                            "row_text": clean_text(item.get("row_text", "")),
-                        }
-                    )
-                if results:
-                    LOGGER.info(
-                        "New Hampshire portal returned %s candidate rows for PID=%s using provider_variant=%s",
-                        len(results),
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    return results
-                self.finalize_state_portal_query("NH")
-            LOGGER.info("New Hampshire portal returned 0 candidate rows for PID=%s", record.get("PID", ""))
-            return []
-        except Exception:
-            self.reset_state_portal_driver("NH")
-            raise
-
-    def fetch_new_hampshire_detail_page(
-        self,
-        driver: webdriver.Chrome,
-        detail_url: str,
-        action_label: str,
-    ) -> Dict[str, str]:
-        LOGGER.info("Fetching New Hampshire detail page via Selenium action=%s url=%s", action_label, detail_url)
-        existing_handles = set(driver.window_handles)
-        driver.execute_script("window.open(arguments[0], '_blank');", detail_url)
-        WebDriverWait(driver, 10).until(lambda d: len(d.window_handles) > len(existing_handles))
-        new_handles = [handle for handle in driver.window_handles if handle not in existing_handles]
-        if new_handles:
-            driver.switch_to.window(new_handles[-1])
-        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-            EC.presence_of_element_located((By.XPATH, '//*[@id="j_id0:j_id7:j_id98"]/div[1]/div/div/div/div[1]/div[1]/div/div/div[1]/div/p'))
-        )
-        address_lines = driver.execute_script(
-            """
-const node = document.evaluate(arguments[0], document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-if (!node) return [];
-const lines = [];
-let current = '';
-Array.from(node.childNodes).forEach((child) => {
-  if (child.nodeName && child.nodeName.toLowerCase() === 'br') {
-    if (current.trim()) lines.push(current.trim());
-    current = '';
-    return;
-  }
-  current += child.textContent || '';
-});
-if (current.trim()) lines.push(current.trim());
-return lines;
-""",
-            '//*[@id="j_id0:j_id7:j_id98"]/div[1]/div/div/div/div[1]/div[1]/div/div/div[1]/div/p',
-        ) or []
-        website_href = ""
-        try:
-            website_href = driver.find_element(
-                By.XPATH,
-                '//*[@id="j_id0:j_id7:j_id98:j_id120"]/a',
-            ).get_attribute("href") or ""
-        except Exception:
-            pass
-        phone_text = clean_text(
-            driver.find_element(
-                By.XPATH,
-                '//*[@id="j_id0:j_id7:j_id98"]/div[1]/div/div/div/div[1]/div[2]/div[1]/span[2]',
-            ).text
-        )
-        capacity_text = ""
-        try:
-            capacity_text = clean_text(
-                driver.find_element(
-                    By.XPATH,
-                    '//*[@id="j_id0:j_id7:j_id98"]/div[2]/div[1]/div[3]/div[1]/div/div[6]',
-                ).text
-            )
-        except Exception:
-            pass
-        lines = [clean_text(str(line)) for line in address_lines if clean_text(str(line))]
-        first_line = lines[0] if lines else ""
-        second_line = lines[1] if len(lines) > 1 else ""
-        values = {
-            "Mailing_Address": first_line.replace(",", "").strip(),
-            "Mailing_Zip": normalize_zip(second_line.split(" ")[-1] if second_line.split(" ") else ""),
-            "Telephone": normalize_phone(phone_text),
-            "URL": normalize_url(website_href),
-            "Capacity (optional)": re.sub(r"^\D+", "", capacity_text).strip(),
-            "Age Range (optional)": "",
-            "Detail_URL": normalize_url(driver.current_url),
-        }
-        try:
-            driver.close()
-        except Exception:
-            pass
-        remaining_handles = driver.window_handles
-        if remaining_handles:
-            driver.switch_to.window(remaining_handles[0])
-        LOGGER.info("New Hampshire detail page parsed url=%s values=%s", detail_url, values)
-        return values
-
-    def enrich_from_new_hampshire_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        portal_url = "https://new-hampshire.my.site.com/nhccis/NH_ChildCareSearch"
-        try:
-            candidates = self.search_new_hampshire_portal(record)
-        except Exception:
-            LOGGER.exception("New Hampshire portal search failed for PID=%s", record.get("PID", ""))
-            return {}, {}
-        if not candidates:
-            return {}, {}
-        profile = get_record_name_profile(record)
-        best_candidate = None
-        best_score = -999
-        best_overlap = 0.0
-        for candidate in candidates:
-            provider_name = clean_text(candidate.get("provider_name", ""))
-            shared, recall, _ = token_overlap_metrics(record.get("Daycare_Name", ""), provider_name)
-            score = shared * 4
-            variant_hit = any(
-                clean_text(variant)
-                and len(clean_text(variant)) >= 4
-                and clean_text(variant).lower() in provider_name.lower()
-                for variant in profile.search_name_variants
-            )
-            if variant_hit:
-                score += 4
-            LOGGER.info(
-                "New Hampshire portal candidate scored %s for PID=%s provider=%s overlap=%.3f",
-                score,
-                record.get("PID", ""),
-                provider_name,
-                recall,
-            )
-            if score > best_score:
-                best_score = score
-                best_candidate = candidate
-                best_overlap = recall
-        if not best_candidate or (best_score < 6 and best_overlap < 0.35):
-            return {}, {}
-        driver = self.get_state_portal_driver("NH")
-        try:
-            detail_values = self.fetch_new_hampshire_detail_page(
-                driver=driver,
-                detail_url=best_candidate.get("detail_url", ""),
-                action_label=f"new hampshire detail page [{record.get('PID', '')}]",
-            )
-        except Exception:
-            LOGGER.exception("New Hampshire detail page fetch failed for PID=%s", record.get("PID", ""))
-            detail_values = {}
-        finally:
-            self.finalize_state_portal_query("NH")
-        values = {
-            "Mailing_Address": clean_text(detail_values.get("Mailing_Address", "")),
-            "Mailing_Zip": normalize_zip(detail_values.get("Mailing_Zip", "")),
-            "Telephone": normalize_phone(detail_values.get("Telephone", "")),
-            "URL": clean_text(detail_values.get("URL", "")),
-            "Capacity (optional)": clean_text(detail_values.get("Capacity (optional)", "")),
-            "Age Range (optional)": "",
-        }
-        matched_provider_name = clean_text(best_candidate.get("provider_name", ""))
-        match_status, match_confidence, match_reason = classify_match_status(
-            record,
-            candidate_name=matched_provider_name,
-            candidate_city=clean_text(record.get("Mailing_City", "")),
-            candidate_address=values.get("Mailing_Address", ""),
-            candidate_phone=values.get("Telephone", ""),
-            candidate_url=values.get("URL", ""),
-        )
-        values.update(
-            {
-                "Matched_Provider_Name": matched_provider_name,
-                "Match_Status": match_status,
-                "Match_Confidence": match_confidence,
-                "Matched_Reason": match_reason,
-            }
-        )
-        source_url = clean_text(detail_values.get("Detail_URL", "")) or values.get("URL", "") or portal_url
-        sources = {
-            field: build_source_entry(
-                value=value,
-                source_url=source_url,
-                source_type="official_state_portal",
-            )
-            for field, value in values.items()
-            if field in OUTPUT_HEADERS and clean_text(value)
-        }
-        return values, sources
-
-    def search_south_carolina_portal(self, record: Dict[str, str]) -> List[Dict[str, str]]:
-        profile = get_record_name_profile(record)
-        city = clean_text(record.get("Mailing_City"))
-        home_url = "https://search.sc-ccrr.org/search"
-        try:
-            session_flags = self.state_portal_session_flags.setdefault("SC", {})
-            for variant in profile.search_name_variants[:4]:
-                driver = self.open_or_reuse_state_portal_query_tab(
-                    "SC",
-                    home_url,
-                    ready_locator=(By.ID, "formly_3_input_name_2"),
-                )
-                previous_signature = driver.execute_script(
-                    """
-return Array.from(document.querySelectorAll('app-program-public-search-result-card h3 .item, app-program-public-search-result-card h2.title'))
-  .map((node) => (node.innerText || node.textContent || '').trim())
-  .filter(Boolean)
-  .join(' || ');
-"""
-                ) or ""
-                name_input = driver.find_element(By.ID, "formly_3_input_name_2")
-                location_input = driver.find_element(By.ID, "mat-input-36")
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", name_input)
-                driver.execute_script("arguments[0].click();", name_input)
-                name_input.send_keys(Keys.CONTROL, "a")
-                name_input.send_keys(Keys.DELETE)
-                name_input.send_keys(variant)
-
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", location_input)
-                driver.execute_script("arguments[0].click();", location_input)
-                location_input.send_keys(Keys.CONTROL, "a")
-                location_input.send_keys(Keys.DELETE)
-                location_input.send_keys(city)
-
-                try:
-                    suggestion = WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-                        lambda d: next(
-                            (
-                                element
-                                for element in d.find_elements(By.CSS_SELECTOR, ".pac-item")
-                                if element.is_displayed()
-                                and city.lower() in clean_text(element.text).lower()
-                                and "sc" in clean_text(element.text).lower()
-                            ),
-                            None,
-                        )
-                    )
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", suggestion)
-                    try:
-                        suggestion.click()
-                    except Exception:
-                        driver.execute_script("arguments[0].click();", suggestion)
-                    WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-                        lambda d: city.lower() in clean_text(location_input.get_attribute("value")).lower()
-                    )
-                except Exception:
-                    LOGGER.info(
-                        "South Carolina portal city suggestion was not selected for PID=%s city=%s; continuing with typed location",
-                        record.get("PID", ""),
-                        city,
-                    )
-
-                if not session_flags.get("centers_checked"):
-                    checkbox = driver.find_element(By.ID, "formly_4_checkboxes_publicProgramType_0_0-input")
-                    if not checkbox.is_selected():
-                        driver.execute_script("arguments[0].click();", checkbox)
-                    session_flags["centers_checked"] = True
-
-                LOGGER.info(
-                    "South Carolina portal searching PID=%s with provider_variant=%s city=%s",
-                    record.get("PID", ""),
-                    variant,
-                    city,
-                )
-                search_button = driver.find_element(By.CSS_SELECTOR, "button.search-btn")
-                driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", search_button)
-                try:
-                    search_button.click()
-                except Exception:
-                    driver.execute_script("arguments[0].click();", search_button)
-
-                time.sleep(2.0)
-                driver.execute_script("window.scrollTo(0, Math.max(700, document.body.scrollHeight * 0.45));")
-                wait_timed_out = False
-                try:
-                    WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-                        lambda d: (
-                            "showing 0 programs that match your search" in clean_text(d.find_element(By.TAG_NAME, "body").text).lower()
-                            or "no results found" in clean_text(d.find_element(By.TAG_NAME, "body").text).lower()
-                            or len(d.find_elements(By.CSS_SELECTOR, "app-program-public-search-result-card")) > 0
-                        )
-                        and (
-                            "showing 0 programs that match your search" in clean_text(d.find_element(By.TAG_NAME, "body").text).lower()
-                            or "no results found" in clean_text(d.find_element(By.TAG_NAME, "body").text).lower()
-                            or (
-                                (
-                                    d.execute_script(
-                                        """
-return Array.from(document.querySelectorAll('app-program-public-search-result-card h3 .item, app-program-public-search-result-card h2.title'))
-  .map((node) => (node.innerText || node.textContent || '').trim())
-  .filter(Boolean)
-  .join(' || ');
-"""
-                                    )
-                                    or ""
-                                )
-                                != previous_signature
-                                or not previous_signature
-                            )
-                        )
-                    )
-                except TimeoutException:
-                    wait_timed_out = True
-                    LOGGER.info(
-                        "South Carolina portal wait timed out for PID=%s using provider_variant=%s; inspecting current DOM before skipping",
-                        record.get("PID", ""),
-                        variant,
-                    )
-                body_text = clean_text(driver.find_element(By.TAG_NAME, "body").text).lower()
-                if "showing 0 programs that match your search" in body_text or "no results found" in body_text:
-                    LOGGER.info(
-                        "South Carolina portal returned no rows for PID=%s using provider_variant=%s",
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    continue
-
-                candidate_rows = driver.execute_script(
-                    """
-const rows = [];
-Array.from(document.querySelectorAll('app-program-public-search-result-card')).forEach((card, index) => {
-  const titleNode = card.querySelector('h3 .item, h2.title');
-  const streetNode = card.querySelector('app-view-address-block .street-number');
-  const cityNode = card.querySelector('app-view-address-block .city');
-  const stateNode = card.querySelector('app-view-address-block .state');
-  const zipNode = card.querySelector('app-view-address-block .zip');
-  const phoneNode = card.querySelector('app-view-contact-block .phone-display a, app-view-contact-block a[href^="tel:"]');
-  const addressText = [
-    (streetNode && (streetNode.innerText || streetNode.textContent || '')) || '',
-    [cityNode && (cityNode.innerText || cityNode.textContent || ''), stateNode && (stateNode.innerText || stateNode.textContent || ''), zipNode && (zipNode.innerText || zipNode.textContent || '')].filter(Boolean).join(' ')
-  ].filter(Boolean).join('\n');
-  const profileButton = Array.from(card.querySelectorAll('a,button')).find(
-    (element) => /view profile/i.test((element.innerText || element.textContent || '').trim())
-  );
-  rows.push({
-    candidate_index: index,
-    provider_name: titleNode ? (titleNode.innerText || titleNode.textContent || '') : '',
-    address_text: addressText,
-    phone_text: phoneNode ? (phoneNode.innerText || phoneNode.textContent || '') : '',
-    has_profile_button: !!profileButton
-  });
-});
-return rows;
-"""
-                )
-                results: List[Dict[str, str]] = []
-                for item in candidate_rows or []:
-                    provider_name = clean_text(item.get("provider_name", ""))
-                    address_text = clean_text(item.get("address_text", ""))
-                    if not provider_name or not bool(item.get("has_profile_button")):
-                        continue
-                    results.append(
-                        {
-                            "candidate_index": str(item.get("candidate_index", "")),
-                            "provider_name": provider_name,
-                            "address": address_text,
-                            "city": city if city and city.lower() in address_text.lower() else "",
-                            "zip": normalize_zip(address_text),
-                            "phone": normalize_phone(item.get("phone_text", "")),
-                            "row_text": address_text,
-                        }
-                    )
-                if results:
-                    if wait_timed_out:
-                        LOGGER.info(
-                            "South Carolina portal recovered %s candidate rows from timed-out DOM for PID=%s using provider_variant=%s",
-                            len(results),
-                            record.get("PID", ""),
-                            variant,
-                        )
-                    LOGGER.info(
-                        "South Carolina portal returned %s candidate rows for PID=%s using provider_variant=%s",
-                        len(results),
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    return results
-                LOGGER.info(
-                    "South Carolina portal saw rendered results but parsed 0 candidate rows for PID=%s using provider_variant=%s",
-                    record.get("PID", ""),
-                    variant,
-                )
-            LOGGER.info("South Carolina portal returned 0 candidate rows for PID=%s", record.get("PID", ""))
-            return []
-        except Exception:
-            self.reset_state_portal_driver("SC")
-            raise
-
-    def fetch_south_carolina_detail_page(
-        self,
-        driver: webdriver.Chrome,
-        candidate_index: str,
-        provider_name: str,
-        action_label: str,
-    ) -> Dict[str, str]:
-        LOGGER.info(
-            "Fetching South Carolina detail page via Selenium action=%s candidate_index=%s provider=%s",
-            action_label,
-            candidate_index,
-            provider_name,
-        )
-        index = int(candidate_index)
-        profile_button = driver.execute_script(
-            """
-const normalize = (value) => (value || '').replace(/\\s+/g, ' ').trim().toLowerCase();
-const target = normalize(arguments[0]);
-const cards = Array.from(document.querySelectorAll('app-program-public-search-result-card'));
-let card = cards.find((item) => {
-  const title = normalize(item.querySelector('h3 .item, h2.title')?.innerText || item.querySelector('h3 .item, h2.title')?.textContent || '');
-  return title === target || (target && title.includes(target));
-});
-if (!card && Number.isInteger(arguments[1]) && arguments[1] >= 0 && arguments[1] < cards.length) {
-  card = cards[arguments[1]];
-}
-if (!card) return null;
-return card.querySelector('button.profile-btn') || Array.from(card.querySelectorAll('a,button')).find((element) => /view profile/i.test((element.innerText || element.textContent || '').trim())) || null;
-""",
-            provider_name,
-            index,
-        )
-        if profile_button is None:
-            raise RuntimeError(
-                f"Unable to locate South Carolina View Profile button for provider={provider_name} candidate_index={candidate_index}"
-            )
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", profile_button)
-        try:
-            profile_button.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", profile_button)
-
-        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-            lambda d: "program address" in clean_text(d.find_element(By.TAG_NAME, "body").text).lower()
-            and "contact info" in clean_text(d.find_element(By.TAG_NAME, "body").text).lower()
-        )
-        driver.execute_script("window.scrollTo(0, Math.max(900, document.body.scrollHeight * 0.35));")
-        time.sleep(2.0)
-        detail_values = driver.execute_script(
-            """
-const normalize = (value) => (value || '').replace(/\u00a0/g, ' ').replace(/\s+\n/g, '\n').replace(/\n\s+/g, '\n').replace(/[ \t]+/g, ' ').trim();
-const getSectionText = (label) => {
-  const matches = Array.from(document.querySelectorAll('*')).filter((node) => normalize(node.innerText || node.textContent || '').toLowerCase() === label.toLowerCase());
-  for (let idx = matches.length - 1; idx >= 0; idx -= 1) {
-    let current = matches[idx].parentElement;
-    while (current) {
-      const text = normalize(current.innerText || current.textContent || '');
-      if (text && text.toLowerCase().includes(label.toLowerCase()) && text.length > label.length + 5) {
-        return text;
-      }
-      current = current.parentElement;
-    }
-  }
-  return '';
-};
-const bodyText = normalize(document.body.innerText || document.body.textContent || '');
-const addressBlock = getSectionText('Program Address');
-const contactBlock = getSectionText('Contact Info');
-const onlineBlock = getSectionText('Find Us Online!');
-const ageBlock = getSectionText('We currently serve the following age groups:');
-const enrollmentMatch = bodyText.match(/Total Enrollment\s*(\d+)/i);
-return {
-  address_block: addressBlock,
-  contact_block: contactBlock,
-  online_block: onlineBlock,
-  age_block: ageBlock,
-  enrollment: enrollmentMatch ? enrollmentMatch[1] : '',
-  detail_url: window.location.href || ''
-};
-"""
-        ) or {}
-        address_lines = [
-            clean_text(line)
-            for line in clean_text(detail_values.get("address_block", "")).splitlines()
-            if clean_text(line)
-            and clean_text(line).lower() not in {"program address", "click for directions"}
-            and "county" not in clean_text(line).lower()
-        ]
-        mailing_address = address_lines[0] if address_lines else ""
-        zip_source = address_lines[1] if len(address_lines) > 1 else ""
-        phone_value = normalize_phone(detail_values.get("contact_block", ""))
-        online_match = re.search(r"https?://\S+", clean_text(detail_values.get("online_block", "")))
-        age_lines = [clean_text(line) for line in clean_text(detail_values.get("age_block", "")).splitlines() if clean_text(line)]
-        accepted_rows: List[str] = []
-        for idx, line in enumerate(age_lines):
-            if line.lower() == "accepted" and idx > 0:
-                accepted_rows.append(age_lines[idx - 1])
-
-        def extract_age_range_portion(label: str) -> Tuple[str, str]:
-            match = re.search(r"\(([^)]+)\)", label)
-            if not match:
-                return "", ""
-            range_text = clean_text(match.group(1))
-            pieces = [clean_text(piece) for piece in re.split(r"\s*-\s*", range_text) if clean_text(piece)]
-            if len(pieces) < 2:
-                return "", ""
-            lower = pieces[0]
-            upper = pieces[-1]
-            if not re.search(r"[A-Za-z]", lower):
-                lower = f"{lower} {upper.split()[-1]}"
-            return lower, upper
-
-        first_lower, _ = extract_age_range_portion(accepted_rows[0]) if accepted_rows else ("", "")
-        _, last_upper = extract_age_range_portion(accepted_rows[-1]) if accepted_rows else ("", "")
-        age_value = clean_text(f"{first_lower} - {last_upper}") if first_lower and last_upper else ""
-        values = {
-            "Mailing_Address": mailing_address,
-            "Mailing_Zip": normalize_zip(zip_source),
-            "Telephone": phone_value,
-            "URL": clean_text(online_match.group(0) if online_match else ""),
-            "Capacity (optional)": clean_text(detail_values.get("enrollment", "")),
-            "Age Range (optional)": age_value,
-            "Detail_URL": clean_text(detail_values.get("detail_url", "")),
-        }
-        try:
-            close_button = WebDriverWait(driver, 5).until(
-                EC.element_to_be_clickable((By.XPATH, "/html/body/div[5]/button"))
-            )
-            driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", close_button)
-            try:
-                close_button.click()
-            except Exception:
-                driver.execute_script("arguments[0].click();", close_button)
-            WebDriverWait(driver, 10).until(
-                lambda d: not d.find_elements(By.XPATH, "/html/body/div[5]/button")
-                or not any(element.is_displayed() for element in d.find_elements(By.XPATH, "/html/body/div[5]/button"))
-            )
-        except Exception:
-            LOGGER.info("South Carolina profile close button was not dismissed cleanly; continuing with reused tab")
-        LOGGER.info("South Carolina detail page parsed url=%s values=%s", driver.current_url, values)
-        return values
-
-    def enrich_from_south_carolina_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        portal_url = "https://search.sc-ccrr.org/search"
-        try:
-            candidates = self.search_south_carolina_portal(record)
-        except Exception:
-            LOGGER.exception("South Carolina portal search failed for PID=%s", record.get("PID", ""))
-            return {}, {}
-        if not candidates:
-            return {}, {}
-        profile = get_record_name_profile(record)
-        best_candidate = None
-        best_score = -999
-        best_city_match = False
-        best_overlap = 0.0
-        for candidate in candidates:
-            provider_name = clean_text(candidate.get("provider_name", ""))
-            shared, recall, _ = token_overlap_metrics(record.get("Daycare_Name", ""), provider_name)
-            score = shared * 4
-            city_match = clean_text(record.get("Mailing_City")).lower() == clean_text(candidate.get("city", "")).lower()
-            if city_match:
-                score += 3
-            if clean_text(candidate.get("phone", "")):
-                score += 1
-            variant_hit = any(
-                clean_text(variant)
-                and len(clean_text(variant)) >= 4
-                and clean_text(variant).lower() in provider_name.lower()
-                for variant in profile.search_name_variants[:4]
-            )
-            if variant_hit:
-                score += 4
-            LOGGER.info(
-                "South Carolina portal candidate scored %s for PID=%s provider=%s overlap=%.3f city_match=%s",
-                score,
-                record.get("PID", ""),
-                provider_name,
-                recall,
-                city_match,
-            )
-            if score > best_score:
-                best_score = score
-                best_candidate = candidate
-                best_city_match = city_match
-                best_overlap = recall
-        if not best_candidate:
-            return {}, {}
-        if best_score < 6 and not (best_city_match and best_overlap >= 0.35):
-            LOGGER.warning(
-                "South Carolina portal rejected best candidate for PID=%s provider=%s score=%s overlap=%.3f city_match=%s",
-                record.get("PID", ""),
-                best_candidate.get("provider_name", ""),
-                best_score,
-                best_overlap,
-                best_city_match,
-            )
-            return {}, {}
-        driver = self.get_state_portal_driver("SC")
-        try:
-            detail_values = self.fetch_south_carolina_detail_page(
-                driver=driver,
-                candidate_index=best_candidate.get("candidate_index", ""),
-                provider_name=best_candidate.get("provider_name", ""),
-                action_label=f"south carolina detail page [{record.get('PID', '')}]",
-            )
-        except Exception:
-            LOGGER.exception("South Carolina detail page fetch failed for PID=%s", record.get("PID", ""))
-            detail_values = {}
-        values = {
-            "Mailing_Address": clean_text(detail_values.get("Mailing_Address", "")),
-            "Mailing_Zip": normalize_zip(detail_values.get("Mailing_Zip", "")),
-            "Telephone": normalize_phone(detail_values.get("Telephone", "")),
-            "URL": clean_text(detail_values.get("URL", "")),
-            "Capacity (optional)": clean_text(detail_values.get("Capacity (optional)", "")),
-            "Age Range (optional)": normalize_age_groups_text_to_numeric_range(detail_values.get("Age Range (optional)", "")),
-        }
-        matched_provider_name = clean_text(best_candidate.get("provider_name", ""))
-        match_status, match_confidence, match_reason = classify_match_status(
-            record,
-            candidate_name=matched_provider_name,
-            candidate_city=clean_text(best_candidate.get("city", "")),
-            candidate_address=values.get("Mailing_Address", "") or best_candidate.get("address", ""),
-            candidate_phone=values.get("Telephone", ""),
-            candidate_url=values.get("URL", ""),
-        )
-        values.update(
-            {
-                "Matched_Provider_Name": matched_provider_name,
-                "Match_Status": match_status,
-                "Match_Confidence": match_confidence,
-                "Matched_Reason": match_reason,
-            }
-        )
-        source_url = clean_text(detail_values.get("Detail_URL", "")) or values.get("URL", "") or portal_url
-        sources = {
-            field: build_source_entry(
-                value=value,
-                source_url=source_url,
-                source_type="official_state_portal",
-                notes="South Carolina CCR&R portal",
-            )
-            for field, value in values.items()
-            if clean_text(value)
-        }
-        return values, sources
-
-    def build_maryland_city_slug(self, city: str) -> str:
-        slug = clean_text(city).lower()
-        slug = re.sub(r"[^a-z0-9]+", "-", slug)
-        return slug.strip("-")
-
-    def search_maryland_portal(self, record: Dict[str, str]) -> List[Dict[str, str]]:
-        profile = get_record_name_profile(record)
-        city = clean_text(record.get("Mailing_City"))
-        city_slug = self.build_maryland_city_slug(city)
-        portal_url = f"https://locatesearch.marylandfamilynetwork.org/city/{city_slug}-md"
-        try:
-            for variant in profile.search_name_variants:
-                driver = self.open_or_reuse_state_portal_query_tab(
-                    "MD",
-                    portal_url,
-                    ready_locator=(By.XPATH, "/html/body/div[8]/div[3]/div[2]/div[1]/div[1]/div[2]/div/div[42]"),
-                )
-                if city_slug not in clean_text(driver.current_url).lower():
-                    driver.get(portal_url)
-                    WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                        EC.presence_of_element_located((By.XPATH, "/html/body/div[8]/div[3]/div[2]/div[1]/div[1]/div[2]/div/div[42]"))
-                    )
-                search_input = None
-                try:
-                    search_input = driver.find_element(By.XPATH, '//*[@id="searchBiz1"]')
-                except Exception:
-                    trigger = driver.find_element(By.XPATH, "/html/body/div[8]/div[3]/div[2]/div[1]/div[1]/div[2]/div/div[42]")
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", trigger)
-                    try:
-                        trigger.click()
-                    except Exception:
-                        driver.execute_script("arguments[0].click();", trigger)
-                    search_input = WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                        EC.presence_of_element_located((By.XPATH, '//*[@id="searchBiz1"]'))
-                    )
-                else:
-                    driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", search_input)
-                    try:
-                        search_input.click()
-                    except Exception:
-                        driver.execute_script("arguments[0].click();", search_input)
-                search_input = WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-                    EC.presence_of_element_located((By.XPATH, '//*[@id="searchBiz1"]'))
-                )
-                search_input.send_keys(Keys.CONTROL, "a")
-                search_input.send_keys(Keys.DELETE)
-                search_input.send_keys(variant)
-                LOGGER.info(
-                    "Maryland portal searching PID=%s with provider_variant=%s city=%s",
-                    record.get("PID", ""),
-                    variant,
-                    city,
-                )
-                time.sleep(1.0)
-                candidate_rows = []
-                try:
-                    WebDriverWait(driver, 5).until(
-                        EC.presence_of_element_located((By.XPATH, "/html/body/div[29]/div[2]/div[1]/div/div[2]"))
-                    )
-                    candidate_rows = driver.execute_script(
-                    """
-const root = document.evaluate('/html/body/div[29]/div[2]/div[1]/div/div[2]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-if (!root) return [];
-return Array.from(root.children).map((item, index) => {
-  const nameNode = item.querySelector('.bubble-element.Text div') || item.querySelector('.bubble-element.Text');
-  return {
-    candidate_index: index,
-    provider_name: (nameNode && (nameNode.innerText || nameNode.textContent || '')) || ''
-  };
-}).filter((item) => item.provider_name);
-"""
-                    )
-                except Exception:
-                    candidate_rows = []
-                if candidate_rows:
-                    LOGGER.info(
-                        "Maryland portal returned %s candidate rows for PID=%s using provider_variant=%s",
-                        len(candidate_rows),
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    return [{"variant": variant, **item} for item in candidate_rows]
-            LOGGER.info("Maryland portal returned 0 candidate rows for PID=%s", record.get("PID", ""))
-            return []
-        except Exception:
-            self.reset_state_portal_driver("MD")
-            raise
-
-    def fetch_maryland_detail_page(
-        self,
-        driver: webdriver.Chrome,
-        candidate_index: str,
-        provider_name: str,
-        action_label: str,
-    ) -> Dict[str, str]:
-        LOGGER.info(
-            "Fetching Maryland detail page via Selenium action=%s candidate_index=%s provider=%s",
-            action_label,
-            candidate_index,
-            provider_name,
-        )
-        original_handles = set(driver.window_handles)
-        original_handle = driver.current_window_handle
-        clicked = driver.execute_script(
-            """
-const normalize = (value) => (value || '').replace(/\s+/g, ' ').trim().toLowerCase();
-const target = normalize(arguments[0]);
-const index = arguments[1];
-const root = document.evaluate('/html/body/div[29]/div[2]/div[1]/div/div[2]', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-if (!root) return false;
-const children = Array.from(root.children);
-let row = children.find((item) => {
-  const nameNode = item.querySelector('.bubble-element.Text div') || item.querySelector('.bubble-element.Text');
-  const text = normalize(nameNode ? (nameNode.innerText || nameNode.textContent || '') : '');
-  return text === target || (target && text.includes(target));
-});
-if (!row && index >= 0 && index < children.length) row = children[index];
-if (!row) return false;
-const clickable = row.querySelector('.clickable-element') || row;
-clickable.click();
-return true;
-""",
-            provider_name,
-            int(candidate_index),
-        )
-        if not clicked:
-            raise RuntimeError(f"Unable to click Maryland suggestion for provider={provider_name}")
-        try:
-            WebDriverWait(driver, 5).until(lambda d: len(d.window_handles) != len(original_handles))
-        except Exception:
-            pass
-        current_handles = driver.window_handles
-        new_handles = [handle for handle in current_handles if handle not in original_handles]
-        if new_handles:
-            driver.switch_to.window(new_handles[-1])
-        else:
-            try:
-                driver.switch_to.window(original_handle)
-            except Exception:
-                if current_handles:
-                    driver.switch_to.window(current_handles[-1])
-        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-            EC.presence_of_element_located((By.XPATH, "/html/body/div[8]/div[2]/div[2]/div[2]"))
-        )
-        try:
-            WebDriverWait(driver, 8).until(
-                EC.presence_of_element_located((By.XPATH, "/html/body/div[25]/div"))
-            )
-            driver.find_element(By.TAG_NAME, "body").send_keys(Keys.ESCAPE)
-            time.sleep(1.0)
-        except Exception:
-            pass
-        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 20)).until(
-            EC.presence_of_element_located(
-                (By.XPATH, "/html/body/div[8]/div[2]/div[2]/div[2]/div/div[1]/div[1]/div[1]/div[2]/div")
-            )
-        )
-        phone_href = ""
-        website_href = ""
-        address_text = ""
-        try:
-            phone_href = driver.find_element(By.XPATH, "/html/body/div[8]/div[2]/div[2]/div[2]/div/div[1]/div[1]/div[1]/div[3]/div/a").get_attribute("href") or ""
-        except Exception:
-            pass
-        try:
-            WebDriverWait(driver, 5).until(
-                EC.presence_of_element_located(
-                    (By.XPATH, "/html/body/div[8]/div[2]/div[2]/div[2]/div/div[1]/div[1]/div[1]/div[5]/div/a")
-                )
-            )
-            website_href = driver.find_element(
-                By.XPATH,
-                "/html/body/div[8]/div[2]/div[2]/div[2]/div/div[1]/div[1]/div[1]/div[5]/div/a",
-            ).get_attribute("href") or ""
-        except Exception:
-            try:
-                website_href = driver.execute_script(
-                    """
-const node = document.evaluate('/html/body/div[8]/div[2]/div[2]/div[2]/div/div[1]/div[1]/div[1]/div[5]/div/a', document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
-return node ? (node.href || node.getAttribute('href') || '') : '';
-"""
-                ) or ""
-            except Exception:
-                pass
-        try:
-            address_text = clean_text(driver.find_element(By.XPATH, "/html/body/div[8]/div[2]/div[2]/div[2]/div/div[1]/div[1]/div[1]/div[2]/div").text)
-        except Exception:
-            pass
-        address_segments = [clean_text(part) for part in address_text.split(",") if clean_text(part)]
-        street_address = address_segments[0] if address_segments else ""
-        zip_source = address_segments[-1].split(" ")[-1] if address_segments and address_segments[-1].split(" ") else ""
-        values = {
-            "Mailing_Address": street_address,
-            "Mailing_Zip": normalize_zip(zip_source),
-            "Telephone": normalize_phone(phone_href),
-            "URL": normalize_url(website_href),
-            "Capacity (optional)": "",
-            "Age Range (optional)": "",
-            "Detail_URL": normalize_url(driver.current_url),
-        }
-        LOGGER.info("Maryland detail page parsed url=%s values=%s", driver.current_url, values)
-        return values
-
-    def enrich_from_maryland_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        portal_url = f"https://locatesearch.marylandfamilynetwork.org/city/{self.build_maryland_city_slug(clean_text(record.get('Mailing_City')))}-md"
-        try:
-            candidates = self.search_maryland_portal(record)
-        except Exception:
-            LOGGER.exception("Maryland portal search failed for PID=%s", record.get("PID", ""))
-            return {}, {}
-        if not candidates:
-            return {}, {}
-        profile = get_record_name_profile(record)
-        best_candidate = None
-        best_score = -999
-        best_overlap = 0.0
-        for candidate in candidates:
-            provider_name = clean_text(candidate.get("provider_name", ""))
-            shared, recall, _ = token_overlap_metrics(record.get("Daycare_Name", ""), provider_name)
-            score = shared * 4
-            variant_hit = any(
-                clean_text(variant)
-                and len(clean_text(variant)) >= 4
-                and clean_text(variant).lower() in provider_name.lower()
-                for variant in profile.search_name_variants
-            )
-            if variant_hit:
-                score += 4
-            LOGGER.info(
-                "Maryland portal candidate scored %s for PID=%s provider=%s overlap=%.3f",
-                score,
-                record.get("PID", ""),
-                provider_name,
-                recall,
-            )
-            if score > best_score:
-                best_score = score
-                best_candidate = candidate
-                best_overlap = recall
-        if not best_candidate or (best_score < 6 and best_overlap < 0.35):
-            return {}, {}
-        driver = self.get_state_portal_driver("MD")
-        try:
-            detail_values = self.fetch_maryland_detail_page(
-                driver=driver,
-                candidate_index=best_candidate.get("candidate_index", ""),
-                provider_name=best_candidate.get("provider_name", ""),
-                action_label=f"maryland detail page [{record.get('PID', '')}]",
-            )
-        except Exception:
-            LOGGER.exception("Maryland detail page fetch failed for PID=%s", record.get("PID", ""))
-            detail_values = {}
-        finally:
-            self.finalize_state_portal_query("MD")
-        values = {
-            "Mailing_Address": clean_text(detail_values.get("Mailing_Address", "")),
-            "Mailing_Zip": normalize_zip(detail_values.get("Mailing_Zip", "")),
-            "Telephone": normalize_phone(detail_values.get("Telephone", "")),
-            "URL": clean_text(detail_values.get("URL", "")),
-            "Capacity (optional)": "",
-            "Age Range (optional)": "",
-        }
-        matched_provider_name = clean_text(best_candidate.get("provider_name", ""))
-        match_status, match_confidence, match_reason = classify_match_status(
-            record,
-            candidate_name=matched_provider_name,
-            candidate_city=clean_text(record.get("Mailing_City", "")),
-            candidate_address=values.get("Mailing_Address", ""),
-            candidate_phone=values.get("Telephone", ""),
-            candidate_url=values.get("URL", ""),
-        )
-        values.update(
-            {
-                "Matched_Provider_Name": matched_provider_name,
-                "Match_Status": match_status,
-                "Match_Confidence": match_confidence,
-                "Matched_Reason": match_reason,
-            }
-        )
-        source_url = clean_text(detail_values.get("Detail_URL", "")) or values.get("URL", "") or portal_url
-        sources = {
-            field: build_source_entry(
-                value=value,
-                source_url=source_url,
-                source_type="official_state_portal",
-                notes="Maryland Family Network locate search",
-            )
-            for field, value in values.items()
-            if clean_text(value)
-        }
-        return values, sources
-
-    def search_oklahoma_portal(self, record: Dict[str, str]) -> List[Dict[str, str]]:
-        profile = get_record_name_profile(record)
-        city = clean_text(record.get("Mailing_City"))
-        home_url = "https://ccl.dhs.ok.gov/providers"
-        try:
-            for variant in profile.search_name_variants[:4]:
-                query_url = f"https://ccl.dhs.ok.gov/providers?provider-name={quote_plus(variant)}"
-                driver = self.open_state_portal_query_tab("OK", query_url)
-                LOGGER.info(
-                    "Loading Oklahoma portal query for PID=%s provider_variant=%s url=%s",
-                    record.get("PID", ""),
-                    variant,
-                    query_url,
-                )
-                WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-                    EC.presence_of_element_located((By.XPATH, "/html/body/div/main/form/div[4]/div[1]/ul"))
-                )
-                time.sleep(1.5)
-                candidate_rows = driver.execute_script(
-                    """
-const list = document.querySelector('body div main form div:nth-of-type(4) div:nth-of-type(1) ul');
-if (!list) return [];
-const rows = [];
-Array.from(list.querySelectorAll('li')).forEach((item, candidateIndex) => {
-  const spans = item.querySelectorAll('span');
-  const citySpan = spans[0] || null;
-  const actionButton = item.querySelector('span:nth-of-type(2) button, button');
-  const buttonText = ((actionButton && actionButton.innerText) || '').trim();
-  const cityRaw = ((citySpan && citySpan.innerText) || '').trim();
-  const providerName = buttonText;
-  const rowText = (item.innerText || '').trim();
-  let cityValue = '';
-  const rowParts = rowText.split(/\s+/).filter(Boolean);
-  if (rowParts.length > 3) {
-    cityValue = rowParts[3].replace(/,\s*$/, '').trim();
-  } else {
-    const cityMatch = rowText.match(/([A-Z][A-Z\\s.'-]+),\\s*OK\\b/i);
-    cityValue = cityMatch ? cityMatch[1].trim() : '';
-  }
-  rows.push({
-    candidate_index: candidateIndex,
-    provider_name: providerName,
-    city_raw: cityRaw,
-    city: cityValue,
-    row_text: rowText
-  });
-});
-return rows;
-"""
-                )
-                results: List[Dict[str, str]] = []
-                for item in candidate_rows or []:
-                    provider_name = clean_text(item.get("provider_name", ""))
-                    if not provider_name:
-                        continue
-                    result_city = clean_text(item.get("city", ""))
-                    results.append(
-                        {
-                            "provider_name": provider_name,
-                            "city": result_city,
-                            "row_text": clean_text(item.get("row_text", "")),
-                            "candidate_index": str(item.get("candidate_index", "")),
-                        }
-                    )
-                if results:
-                    LOGGER.info(
-                        "Oklahoma portal returned %s candidate rows for PID=%s using provider_variant=%s",
-                        len(results),
-                        record.get("PID", ""),
-                        variant,
-                    )
-                    return results
-                self.finalize_state_portal_query("OK")
-            LOGGER.info("Oklahoma portal returned 0 candidate rows for PID=%s", record.get("PID", ""))
-            return []
-        except Exception:
-            self.reset_state_portal_driver("OK")
-            raise
-
-    def fetch_oklahoma_detail_page(
-        self,
-        driver: webdriver.Chrome,
-        candidate_index: str,
-        action_label: str,
-        record: Dict[str, str],
-    ) -> Dict[str, str]:
-        LOGGER.info(
-            "Fetching Oklahoma detail page via Selenium action=%s candidate_index=%s",
-            action_label,
-            candidate_index,
-        )
-        list_root = WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-            EC.presence_of_element_located((By.XPATH, "/html/body/div/main/form/div[4]/div[1]/ul"))
-        )
-        items = list_root.find_elements(By.XPATH, "./li")
-        index = int(candidate_index)
-        if index < 0 or index >= len(items):
-            raise RuntimeError(f"Oklahoma candidate_index={candidate_index} is out of bounds for {len(items)} rows")
-        detail_link_xpath = f"/html/body/div/main/form/div[4]/div[1]/ul/li[{index + 1}]/div/a"
-        detail_link = WebDriverWait(driver, 10).until(
-            EC.presence_of_element_located((By.XPATH, detail_link_xpath))
-        )
-        driver.execute_script("arguments[0].scrollIntoView({block: 'center'});", detail_link)
-        time.sleep(0.5)
-        try:
-            detail_link.click()
-        except Exception:
-            driver.execute_script("arguments[0].click();", detail_link)
-
-        phone_xpath = "/html/body/div/main/div/div[2]/div/div/div[1]"
-        address_xpath = "/html/body/div/main/div/div[2]/div/div/div[3]"
-        capacity_xpath = "/html/body/div/main/div/div[1]/section[2]/section[2]"
-
-        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-            EC.presence_of_element_located((By.XPATH, phone_xpath))
-        )
-        WebDriverWait(driver, max(SELENIUM_WAIT_TIMEOUT, 30)).until(
-            EC.presence_of_element_located((By.XPATH, address_xpath))
-        )
-        time.sleep(1.0)
-
-        phone_text = normalize_phone(driver.find_element(By.XPATH, phone_xpath).text)
-        address_text = clean_text(driver.find_element(By.XPATH, address_xpath).text)
-        capacity_text = ""
-        try:
-            capacity_text = clean_text(driver.find_element(By.XPATH, capacity_xpath).text)
-            capacity_text = re.sub(r"^\s*Total\s+Capacity\s*", "", capacity_text, flags=re.IGNORECASE).strip(" :-")
-        except Exception:
-            capacity_text = ""
-
-        detail_values = {
-            "Mailing_Address": address_text,
-            "Mailing_Zip": normalize_zip(address_text),
-            "Telephone": phone_text,
-            "Detail_URL": normalize_url(driver.current_url),
-            "Capacity (optional)": capacity_text,
-            "Age Range (optional)": "",
-        }
-        LOGGER.info("Oklahoma detail page parsed url=%s values=%s", driver.current_url, detail_values)
-        return detail_values
-
-    def enrich_from_oklahoma_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        try:
-            candidates = self.search_oklahoma_portal(record)
-        except Exception:
-            LOGGER.exception("Oklahoma portal search failed for PID=%s", record.get("PID", ""))
-            return {}, {}
-        if not candidates:
-            return {}, {}
-        profile = get_record_name_profile(record)
-        best_candidate = None
-        best_score = -999
-        best_city_match = False
-        best_overlap = 0.0
-        for candidate in candidates:
-            provider_name = clean_text(candidate.get("provider_name", ""))
-            shared, recall, _ = token_overlap_metrics(record.get("Daycare_Name", ""), provider_name)
-            score = shared * 4
-            city_match = clean_text(record.get("Mailing_City")).lower() == clean_text(candidate.get("city", "")).lower()
-            if city_match:
-                score += 3
-            variant_hit = any(
-                clean_text(variant)
-                and len(clean_text(variant)) >= 4
-                and clean_text(variant).lower() in provider_name.lower()
-                for variant in profile.search_name_variants[:4]
-            )
-            if variant_hit:
-                score += 4
-            LOGGER.info(
-                "Oklahoma portal candidate scored %s for PID=%s provider=%s overlap=%.3f city_match=%s record_city=%s candidate_city=%s row_text=%s",
-                score,
-                record.get("PID", ""),
-                provider_name,
-                recall,
-                city_match,
-                clean_text(record.get("Mailing_City", "")),
-                clean_text(candidate.get("city", "")),
-                clean_text(candidate.get("row_text", "")),
-            )
-            if score > best_score:
-                best_score = score
-                best_candidate = candidate
-                best_city_match = city_match
-                best_overlap = recall
-        if not best_candidate:
-            return {}, {}
-        if best_score < 6 and not (best_city_match and best_overlap >= 0.35):
-            LOGGER.warning(
-                "Oklahoma portal rejected best candidate for PID=%s provider=%s score=%s overlap=%.3f city_match=%s",
-                record.get("PID", ""),
-                best_candidate.get("provider_name", ""),
-                best_score,
-                best_overlap,
-                best_city_match,
-            )
-            return {}, {}
-        driver = self.get_state_portal_driver("OK")
-        try:
-            detail_values = self.fetch_oklahoma_detail_page(
-                driver=driver,
-                candidate_index=best_candidate.get("candidate_index", ""),
-                action_label=f"oklahoma detail page [{record.get('PID', '')}]",
-                record=record,
-            )
-        except Exception:
-            LOGGER.exception("Oklahoma detail page fetch failed for PID=%s", record.get("PID", ""))
-            detail_values = {}
-        finally:
-            self.finalize_state_portal_query("OK")
-        values = {
-            "Mailing_Address": clean_text(detail_values.get("Mailing_Address", "")),
-            "Mailing_Zip": normalize_zip(detail_values.get("Mailing_Zip", "") or detail_values.get("Mailing_Address", "")),
-            "Telephone": normalize_phone(detail_values.get("Telephone", "")),
-            "URL": "",
-            "Capacity (optional)": clean_text(detail_values.get("Capacity (optional)", "")),
-            "Age Range (optional)": "",
-        }
-        matched_provider_name = clean_text(best_candidate.get("provider_name", ""))
-        match_status, match_confidence, match_reason = classify_match_status(
-            record,
-            candidate_name=matched_provider_name,
-            candidate_city=clean_text(best_candidate.get("city", "")),
-            candidate_address=values.get("Mailing_Address", ""),
-            candidate_phone=values.get("Telephone", ""),
-            candidate_url=clean_text(detail_values.get("Detail_URL", "")),
-        )
-        values.update(
-            {
-                "Matched_Provider_Name": matched_provider_name,
-                "Match_Status": match_status,
-                "Match_Confidence": match_confidence,
-                "Matched_Reason": match_reason,
-            }
-        )
-        source_url = clean_text(detail_values.get("Detail_URL", "")) or "https://ccl.dhs.ok.gov/providers"
-        sources = {
-            field: build_source_entry(
-                value=value,
-                source_url=source_url,
-                source_type="official_state_portal",
-                notes="Oklahoma official childcare portal",
-            )
-            for field, value in values.items()
-            if clean_text(value)
-        }
-        return values, sources
-
-    def wait_for_massachusetts_component(self, driver: webdriver.Chrome, tag_name: str) -> None:
-        WebDriverWait(driver, SELENIUM_WAIT_TIMEOUT).until(
-            lambda d: d.execute_script(f"return !!document.querySelector('{tag_name}')")
-        )
-
-    def execute_massachusetts_search(
-        self,
-        driver: webdriver.Chrome,
-        provider_name: str,
-        city: str,
-        zip_code: str,
-    ) -> List[PortalSearchResult]:
-        LOGGER.info(
-            "Executing Massachusetts portal search provider=%s city=%s zip=%s",
-            provider_name,
-            city,
-            zip_code,
-        )
-        script = """
-const root = document.querySelector('c-eec_child-care-search').shadowRoot;
-function setValue(selector, value) {
-  const el = root.querySelector(selector);
-  if (!el) return;
-  el.value = value;
-  el.dispatchEvent(new Event('input', {bubbles:true, composed:true}));
-  el.dispatchEvent(new Event('change', {bubbles:true, composed:true}));
-}
-root.querySelectorAll('lightning-button')[0].shadowRoot.querySelector('button').click();
-setValue('input[name="providerName"]', arguments[0]);
-setValue('input[name="selectedCity"]', arguments[1]);
-setValue('input[name="selectedZipCode"]', arguments[2]);
-root.querySelectorAll('lightning-button')[1].shadowRoot.querySelector('button').click();
-return true;
-"""
-        driver.execute_script(script, provider_name, city, zip_code)
-        time.sleep(8)
-        shadow_html = driver.execute_script(
-            "return document.querySelector('c-eec_child-care-search').shadowRoot.innerHTML;"
-        )
-        soup = BeautifulSoup(shadow_html, "html.parser")
-        results: List[PortalSearchResult] = []
-        for block in soup.select(".address-block"):
-            name_node = block.select_one("a.school-name")
-            if not name_node:
-                continue
-            detail_path = clean_text(name_node.get("data-name"))
-            title = clean_text(name_node.get("aria-label") or name_node.get_text(" ", strip=True))
-            spans = block.select(".input-group span[aria-label]")
-            address = clean_text(spans[0].get("aria-label")) if len(spans) >= 1 else ""
-            program_type = clean_text(spans[1].get("aria-label")) if len(spans) >= 2 else ""
-            if detail_path:
-                results.append(
-                    PortalSearchResult(
-                        title=title,
-                        detail_url=normalize_url(urljoin("https://childcare.mass.gov", detail_path)),
-                        address=address,
-                        program_type=program_type,
-                    )
-                )
-        LOGGER.info("Massachusetts portal search produced %s candidates", len(results))
-        return results
-
-    def search_massachusetts_portal(self, record: Dict[str, str]) -> List[PortalSearchResult]:
-        driver = self.get_search_driver()
-        LOGGER.info("Loading Massachusetts official portal for PID=%s", record.get("PID", ""))
-        driver.get(STATE_PORTAL_URLS["MA"])
-        self.wait_for_massachusetts_component(driver, "c-eec_child-care-search")
-        time.sleep(5)
-
-        provider_name = get_record_name_profile(record).search_name_primary
-        city = clean_text(record.get("Mailing_City"))
-        zip_code = clean_text(record.get("Mailing_Zip"))
-        search_variants = [
-            (provider_name, city, zip_code),
-            (provider_name, city, ""),
-            ("", city, zip_code),
-            ("", city, ""),
-        ]
-        for variant_provider, variant_city, variant_zip in search_variants:
-            results = self.execute_massachusetts_search(driver, variant_provider, variant_city, variant_zip)
-            if results:
-                LOGGER.info(
-                    "Massachusetts portal returned %s candidate results for PID=%s",
-                    len(results),
-                    record.get("PID", ""),
-                )
-                return results
-        LOGGER.info("Massachusetts portal returned 0 candidate results for PID=%s", record.get("PID", ""))
-        return []
-
-    def parse_massachusetts_detail(self, detail_url: str) -> Dict[str, str]:
-        driver = self.get_search_driver()
-        LOGGER.info("Opening Massachusetts provider detail page %s", detail_url)
-        driver.get(detail_url)
-        self.wait_for_massachusetts_component(driver, "c-eec_provider-details")
-        time.sleep(5)
-        shadow_html = driver.execute_script(
-            "return document.querySelector('c-eec_provider-details').shadowRoot.innerHTML;"
-        )
-        soup = BeautifulSoup(shadow_html, "html.parser")
-
-        result = {
-            "Mailing_Address": clean_text((soup.select_one(".account-address") or {}).get_text(" ", strip=True) if soup.select_one(".account-address") else ""),
-            "Mailing_Zip": "",
-            "Telephone": "",
-            "URL": "",
-            "Capacity (optional)": "",
-            "Age Range (optional)": "",
-            "Email": "",
-        }
-
-        tel = soup.select_one('a[href^="tel:"]')
-        if tel:
-            result["Telephone"] = normalize_phone(tel.get_text(" ", strip=True))
-        email = soup.select_one('a[href^="mailto:"]')
-        if email:
-            result["Email"] = clean_text(email.get_text(" ", strip=True))
-        result["Mailing_Zip"] = normalize_zip(result["Mailing_Address"])
-
-        all_info = soup.select(".view-only-info")
-        for block in all_info:
-            label = clean_text((block.select_one("label") or {}).get_text(" ", strip=True) if block.select_one("label") else "")
-            value = clean_text((block.select_one(".read-only-info") or {}).get_text(" ", strip=True) if block.select_one(".read-only-info") else "")
-            if label.startswith("Capacity"):
-                result["Capacity (optional)"] = value
-
-        age_groups = []
-        for cell in soup.select("td.slds-cell-wrap"):
-            text = clean_text(cell.get_text(" ", strip=True))
-            if text in {
-                "Infant Age Group",
-                "Toddler Age Group",
-                "Preschool Age Group",
-                "School Age Group",
-                "Kindergarten Age Group",
-            }:
-                age_groups.append(text.replace(" Age Group", ""))
-        result["Age Range (optional)"] = age_groups_to_numeric_range(age_groups)
-
-        for link in soup.select('a[href^="http"]'):
-            href = normalize_url(link.get("href"))
-            if not href:
-                continue
-            domain = domain_of(href)
-            if domain in {"mass.gov", "google.com", "www.google.com"}:
-                continue
-            result["URL"] = href
-            break
-
-        return result
-
-    def enrich_from_massachusetts_portal(
-        self, record: Dict[str, str]
-    ) -> Tuple[Dict[str, str], Dict[str, Dict[str, str]]]:
-        candidates = self.search_massachusetts_portal(record)
-        if not candidates:
-            return {}, {}
-
-        city = clean_text(record.get("Mailing_City"))
-        best = None
-        best_score = -999
-        for candidate in candidates[:10]:
-            combined = f"{candidate.title} {candidate.address} {candidate.program_type}"
-            score = token_overlap_score(record.get("Daycare_Name", ""), combined) * 3
-            if city and city.lower() in combined.lower():
-                score += 2
-            if clean_text(record.get("Mailing_State")) == "MA":
-                score += 1
-            if score > best_score:
-                best_score = score
-                best = candidate
-
-        if not best or best_score < 7:
-            LOGGER.warning(
-                "Massachusetts adapter rejected candidates for PID=%s because best score=%s was below threshold",
-                record.get("PID", ""),
-                best_score,
-            )
-            return {}, {}
-
-        detail = self.parse_massachusetts_detail(best.detail_url)
-        values = {
-            "Mailing_Address": detail.get("Mailing_Address", ""),
-            "Mailing_Zip": detail.get("Mailing_Zip", ""),
-            "Telephone": detail.get("Telephone", ""),
-            "URL": detail.get("URL", ""),
-            "Capacity (optional)": detail.get("Capacity (optional)", ""),
-            "Age Range (optional)": detail.get("Age Range (optional)", ""),
-        }
-        sources = {
-            field: build_source_entry(
-                value=value,
-                source_url=best.detail_url,
-                source_type="official_state_portal",
-                notes=(
-                    "Massachusetts EEC portal; age range normalized from official age-group categories"
-                    if field == "Age Range (optional)"
-                    else "Massachusetts EEC portal"
-                ),
-            )
-            for field, value in values.items()
-            if clean_text(value)
-        }
-        if clean_text(detail.get("Email")):
-            sources["Email"] = build_source_entry(
-                value=detail["Email"],
-                source_url=best.detail_url,
-                source_type="official_state_portal",
-                notes="Massachusetts EEC portal",
-            )
-        LOGGER.info(
-            "Massachusetts adapter selected %s for PID=%s with score=%s",
-            best.detail_url,
-            record.get("PID", ""),
-            best_score,
-        )
-        return values, sources
 
     def search(self, query: str) -> List[SearchResult]:
         LOGGER.info("Running search query: %s", query)
@@ -7574,7 +4288,7 @@ return true;
             search_profile.search_name_primary,
             search_profile.search_name_variants,
         )
-        if RUN_GOOGLE_ONLY_SAMPLE_MODE or SINGLE_PID_FILTER:
+        if SINGLE_PID_FILTER:
             staged = {}
             cached = {}
             LOGGER.info("PID=%s fresh-run mode ignoring staged/checkpointed rows for debugging measurement", pid)
@@ -7631,30 +4345,11 @@ return true;
             base_output["Matched_Reason"] = "CSV cleaning only mode; generated normalized search fields without live website enrichment."
             return base_output
 
-        if RUN_GOOGLE_ONLY_SAMPLE_MODE:
-            LOGGER.info("PID=%s Google-only sample mode enabled; skipping all API/state connector calls", pid)
-            self.enrich_from_google_api_miss_fallback(search_record, base_output, field_sources)
-            base_output["Telephone"] = normalize_phone(base_output.get("Telephone"))
-            base_output["Mailing_Zip"] = normalize_zip(base_output.get("Mailing_Zip"))
-            base_output["URL"] = normalize_url(base_output.get("URL"))
-            for field in ("Telephone", "Mailing_Zip", "URL"):
-                if field in field_sources:
-                    field_sources[field]["value"] = base_output.get(field, "")
-            if not row_has_found_data(base_output) and not base_output.get("Match_Status"):
-                base_output["Match_Status"] = "not_found"
-                base_output["Match_Confidence"] = "0"
-                base_output["Matched_Reason"] = "Google-only sample mode did not find any datapoints."
-            self.set_checkpoint_row(pid, base_output, field_sources)
-            self.set_staging_row(pid, base_output, field_sources)
-            current_checkpoint_size = self.checkpoint_size()
-            if current_checkpoint_size % 20 == 0:
-                self.save_checkpoint()
-                self.save_staging()
-            return base_output
-
         try:
             portal_values, portal_sources = self.enrich_from_state_portal(search_record)
-        except Exception:
+        except Exception as exc:
+            if isinstance(exc, TimeoutException) and clean_text(record.get("Mailing_State")) in ADAPTER_REGISTRY:
+                self.queue_adapter_timeout_retry(record)
             LOGGER.exception("Official state portal enrichment failed for PID=%s", pid)
             portal_values, portal_sources = {}, {}
 
@@ -7670,71 +4365,33 @@ return true;
                 notes=source.get("notes", ""),
             )
 
-        if RUN_API_STATE_TEST_MODE and not row_has_found_data(base_output):
-            LOGGER.info("PID=%s had no API data after state adapter; invoking Google API-miss sample fallback", pid)
-            self.enrich_from_google_api_miss_fallback(search_record, base_output, field_sources)
-
-        if USE_STATE_PORTAL_ADAPTERS_ONLY:
-            base_output["Telephone"] = normalize_phone(base_output.get("Telephone"))
-            base_output["Mailing_Zip"] = normalize_zip(base_output.get("Mailing_Zip"))
-            base_output["URL"] = normalize_url(base_output.get("URL"))
-            for field in ("Telephone", "Mailing_Zip", "URL"):
-                if field in field_sources:
-                    field_sources[field]["value"] = base_output.get(field, "")
-            LOGGER.info(
-                "PID=%s completed using state-portal-only mode address=%s zip=%s phone=%s url=%s capacity=%s age=%s",
-                pid,
-                base_output.get("Mailing_Address", ""),
-                base_output.get("Mailing_Zip", ""),
-                base_output.get("Telephone", ""),
-                base_output.get("URL", ""),
-                base_output.get("Capacity (optional)", ""),
-                base_output.get("Age Range (optional)", ""),
-            )
-            if not row_has_found_data(base_output):
-                base_output["Match_Status"] = "not_found"
-                base_output["Match_Confidence"] = "0"
-                base_output["Matched_Reason"] = "No datapoints were found from the configured official state adapter."
-            self.set_checkpoint_row(pid, base_output, field_sources)
-            self.set_staging_row(pid, base_output, field_sources)
-            current_checkpoint_size = self.checkpoint_size()
-            if current_checkpoint_size % 20 == 0:
-                self.save_checkpoint()
-                self.save_staging()
-            return base_output
-
-        search_name_variants = search_profile.search_name_variants[:4] or [search_profile.search_name_primary]
-        official_queries = [
-            " ".join(
-                part
-                for part in [f'"{variant}"', record["Mailing_City"], record["Mailing_State"], "daycare"]
-                if clean_text(part)
-            )
-            for variant in search_name_variants[:3]
-        ]
-        official_queries = dedupe_preserve_order(official_queries)
-        search_results: List[SearchResult] = []
-        seen_result_urls = set()
-        attempted_search_queries: List[str] = []
-        for query in official_queries:
-            attempted_search_queries.append(query)
-            try:
-                variant_results = self.search(query)
-            except Exception:
-                LOGGER.exception("Search failed for PID=%s query=%s", pid, query)
-                continue
-            for result in variant_results:
-                if result.url in seen_result_urls:
-                    continue
-                seen_result_urls.add(result.url)
-                search_results.append(result)
-
-        if not search_results:
-            LOGGER.warning("PID=%s not checkpointed because all official search queries failed or returned no results", pid)
+        base_output["Telephone"] = normalize_phone(base_output.get("Telephone"))
+        base_output["Mailing_Zip"] = normalize_zip(base_output.get("Mailing_Zip"))
+        base_output["URL"] = normalize_url(base_output.get("URL"))
+        for field in ("Telephone", "Mailing_Zip", "URL"):
+            if field in field_sources:
+                field_sources[field]["value"] = base_output.get(field, "")
+        LOGGER.info(
+            "PID=%s completed using adapter/api-only mode address=%s zip=%s phone=%s url=%s capacity=%s age=%s",
+            pid,
+            base_output.get("Mailing_Address", ""),
+            base_output.get("Mailing_Zip", ""),
+            base_output.get("Telephone", ""),
+            base_output.get("URL", ""),
+            base_output.get("Capacity (optional)", ""),
+            base_output.get("Age Range (optional)", ""),
+        )
+        if not row_has_found_data(base_output):
             base_output["Match_Status"] = "not_found"
             base_output["Match_Confidence"] = "0"
-            base_output["Matched_Reason"] = "No official-search candidates were returned for the cleaned daycare name variants."
-            return base_output
+            base_output["Matched_Reason"] = "No datapoints were found from the configured state adapter or API."
+        self.set_checkpoint_row(pid, base_output, field_sources)
+        self.set_staging_row(pid, base_output, field_sources)
+        current_checkpoint_size = self.checkpoint_size()
+        if current_checkpoint_size % 20 == 0:
+            self.save_checkpoint()
+            self.save_staging()
+        return base_output
 
         LOGGER.info("PID=%s official search queries attempted=%s parsed_results=%s", pid, attempted_search_queries, len(search_results))
         snippets = [item.snippet for item in search_results if item.snippet]
@@ -8027,45 +4684,59 @@ def read_rows(path: str) -> List[Dict[str, str]]:
 
 def write_rows(path: str, rows: List[Dict[str, str]]) -> None:
     output_rows = rows
+    official_cache = load_checkpoint_file(CHECKPOINT_FILE)
+    google_cache = load_checkpoint_file(GOOGLE_CHECKPOINT_FILE)
+    if official_cache or google_cache:
+        google_merge_fields = ("Mailing_Address", "Mailing_Zip", "Telephone", "URL")
+        merged_rows: List[Dict[str, str]] = []
+        for row in output_rows:
+            pid = clean_text(row.get("PID"))
+            official_payload = official_cache.get(pid, {})
+            google_payload = google_cache.get(pid, {})
+            official_row = dict(official_payload.get("row", {})) if isinstance(official_payload, dict) else {}
+            google_row = dict(google_payload.get("row", {})) if isinstance(google_payload, dict) else {}
+            base_row = dict(official_row or row)
+            if not google_row or not row_has_found_data(google_row):
+                merged_rows.append(base_row)
+                continue
+            daycare_name = clean_text(base_row.get("Daycare_Name", "")) or clean_text(google_row.get("Daycare_Name", ""))
+            official_name = clean_text(base_row.get("Matched_Provider_Name", ""))
+            google_name = clean_text(google_row.get("Matched_Provider_Name", ""))
+            official_score = int(clean_text(base_row.get("Match_Confidence", "0")) or "0")
+            google_score = int(clean_text(google_row.get("Match_Confidence", "0")) or "0")
+            _, official_recall, official_precision = token_overlap_metrics(daycare_name, official_name)
+            _, google_recall, google_precision = token_overlap_metrics(daycare_name, google_name)
+            official_name_score = official_recall + official_precision
+            google_name_score = google_recall + google_precision
+            google_wins = google_name_score > official_name_score or (
+                google_name_score == official_name_score and google_score > official_score
+            )
+            merged_row = dict(base_row)
+            for field in google_merge_fields:
+                official_value = clean_text(base_row.get(field))
+                google_value = clean_text(google_row.get(field))
+                if official_value and google_value and official_value != google_value:
+                    merged_row[field] = google_value if google_wins else official_value
+                elif not official_value and google_value:
+                    merged_row[field] = google_value
+            merged_rows.append(merged_row)
+        output_rows = merged_rows
     if ADAPTER_ONLY_TEST_STATES:
-        output_rows = [
-            row for row in rows
-            if clean_text(row.get("Mailing_State")) in ADAPTER_ONLY_TEST_STATES and row_has_found_data(row)
-        ]
+        output_rows = [row for row in output_rows if clean_text(row.get("Mailing_State")) in ADAPTER_ONLY_TEST_STATES]
         LOGGER.info(
-            "Adapter-only test output filtered from %s rows down to %s rows with found adapter data for states=%s",
+            "Adapter-only test output filtered from %s rows down to %s rows for states=%s",
             len(rows),
             len(output_rows),
             sorted(ADAPTER_ONLY_TEST_STATES),
         )
-    elif RUN_GOOGLE_ONLY_SAMPLE_MODE:
-        output_rows = [row for row in rows if row_has_found_data(row)]
-        LOGGER.info(
-            "Google-only sample output filtered from %s rows down to %s rows with found Google data",
-            len(rows),
-            len(output_rows),
-        )
     elif RUN_API_STATE_TEST_MODE:
         api_states = set(load_active_api_model_states())
         output_rows = [
-            row for row in rows
-            if clean_text(row.get("Mailing_State")) in api_states and row_has_found_data(row)
+            row for row in output_rows if clean_text(row.get("Mailing_State")) in api_states
         ]
-        LOGGER.info(
-            "API-state test output filtered from %s rows down to %s rows with found API data",
-            len(rows),
-            len(output_rows),
-        )
-    elif RUN_MODEL_STATE_STAGING and not CSV_CLEANING_ONLY_MODE:
-        output_rows = [row for row in rows if row_has_found_data(row)]
-        LOGGER.info(
-            "Model-state staging output filtered from %s rows down to %s rows with found data",
-            len(rows),
-            len(output_rows),
-        )
     LOGGER.info("Writing %s rows to %s", len(output_rows), path)
     with open(path, "w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=OUTPUT_HEADERS, delimiter=";")
+        writer = csv.DictWriter(handle, fieldnames=OUTPUT_HEADERS, delimiter=";", extrasaction="ignore")
         writer.writeheader()
         writer.writerows(output_rows)
     LOGGER.info("Completed writing output CSV to %s", path)
@@ -8091,44 +4762,6 @@ def select_rows_for_run(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
             len(filtered_rows),
         )
         return filtered_rows
-    if PORTAL_VALIDATION_ALL_ROWS_STATES:
-        filtered_rows = [row for row in rows if clean_text(row.get("Mailing_State")) in PORTAL_VALIDATION_ALL_ROWS_STATES]
-        LOGGER.info(
-            "Running portal validation all-rows mode for states=%s with %s matched CSV rows",
-            sorted(PORTAL_VALIDATION_ALL_ROWS_STATES),
-            len(filtered_rows),
-        )
-        return filtered_rows
-    if PORTAL_VALIDATION_SAMPLE_ONLY:
-        sample_rows = load_portal_validation_sample_rows()
-        selected_rows: List[Dict[str, str]] = []
-        keyed_rows = {
-            (clean_text(row.get("PID")), clean_text(row.get("Mailing_State"))): row
-            for row in rows
-        }
-        for sample in sample_rows:
-            matched = keyed_rows.get((clean_text(sample.get("PID")), clean_text(sample.get("Mailing_State"))))
-            if matched:
-                selected_rows.append(matched)
-        LOGGER.info(
-            "Running portal validation sample mode for states=%s with %s matched CSV rows",
-            sorted(PORTAL_VALIDATION_SAMPLE_STATES),
-            len(selected_rows),
-        )
-        return selected_rows
-    if RUN_GOOGLE_ONLY_SAMPLE_MODE:
-        sample_size = min(VALIDATION_SAMPLE_SIZE, max(len(rows), 0))
-        randomizer = random.Random(VALIDATION_RANDOM_SEED)
-        indexed_rows = list(enumerate(rows, start=1))
-        sampled = randomizer.sample(indexed_rows, sample_size)
-        sampled.sort(key=lambda item: item[0])
-        selected_rows = [row for _, row in sampled]
-        LOGGER.info(
-            "Running Google-only sample mode with %s randomly selected rows using seed=%s",
-            sample_size,
-            VALIDATION_RANDOM_SEED,
-        )
-        return selected_rows
     if RUN_API_STATE_TEST_MODE:
         api_states = set(load_active_api_model_states())
         filtered_rows = [row for row in rows if clean_text(row.get("Mailing_State")) in api_states]
@@ -8138,59 +4771,8 @@ def select_rows_for_run(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
             len(filtered_rows),
         )
         return filtered_rows
-    if RUN_MODEL_STATE_STAGING:
-        randomizer = random.Random(VALIDATION_RANDOM_SEED)
-        active_states = set(load_active_model_states())
-        grouped_rows: Dict[str, List[Tuple[int, Dict[str, str]]]] = {}
-        for index, row in enumerate(rows, start=1):
-            state = clean_text(row.get("Mailing_State"))
-            if state not in active_states:
-                continue
-            grouped_rows.setdefault(state, []).append((index, row))
-        sampled_rows: List[Tuple[int, Dict[str, str]]] = []
-        for state in sorted(grouped_rows):
-            state_rows = grouped_rows[state]
-            target_count = min(len(state_rows), randomizer.randint(MODEL_STATE_SAMPLE_MIN, MODEL_STATE_SAMPLE_MAX))
-            sampled_rows.extend(randomizer.sample(state_rows, target_count))
-            LOGGER.info(
-                "Model-state staging selected %s rows for state=%s from %s available rows",
-                target_count,
-                state,
-                len(state_rows),
-            )
-        sampled_rows.sort(key=lambda item: item[0])
-        selected_rows = [rows[0]] + [row for _, row in sampled_rows]
-        LOGGER.info(
-            "Running model-state staging sample with %s selected rows across %s active states using seed=%s",
-            len(selected_rows),
-            len(grouped_rows),
-            VALIDATION_RANDOM_SEED,
-        )
-        return selected_rows
-    if VALIDATION_STATE_FILTER:
-        filtered_rows = [row for row in rows if clean_text(row.get("Mailing_State")) == VALIDATION_STATE_FILTER]
-        LOGGER.info(
-            "Running state-filtered validation for state=%s with %s matching rows",
-            VALIDATION_STATE_FILTER,
-            len(filtered_rows),
-        )
-        return filtered_rows
-    if not RUN_VALIDATION_SAMPLE:
-        LOGGER.info("Running full dataset with %s processable rows", len(rows))
-        return rows
-
-    sample_size = min(VALIDATION_SAMPLE_SIZE, max(len(rows), 0))
-    randomizer = random.Random(VALIDATION_RANDOM_SEED)
-    indexed_rows = list(enumerate(rows, start=1))
-    sampled = randomizer.sample(indexed_rows, sample_size)
-    sampled.sort(key=lambda item: item[0])
-    selected_rows = [row for _, row in sampled]
-    LOGGER.info(
-        "Running validation sample with %s randomly selected rows using seed=%s",
-        sample_size,
-        VALIDATION_RANDOM_SEED,
-    )
-    return selected_rows
+    LOGGER.info("Running full dataset with %s processable rows", len(rows))
+    return rows
 
 
 def get_output_path() -> str:
@@ -8201,19 +4783,9 @@ def get_output_path() -> str:
     if ADAPTER_ONLY_TEST_STATES:
         suffix = "_".join(sorted(ADAPTER_ONLY_TEST_STATES))
         return os.path.join(OUTPUT_DIR, f"DaycareBuildings_Enriched_AdapterOnly_{suffix}.csv")
-    if PORTAL_VALIDATION_ALL_ROWS_STATES:
-        return os.path.join(OUTPUT_DIR, "DaycareBuildings_Enriched_IL_VA.csv")
-    if PORTAL_VALIDATION_SAMPLE_ONLY:
-        return os.path.join(OUTPUT_DIR, "DaycareBuildings_Enriched_PortalValidation.csv")
-    if RUN_GOOGLE_ONLY_SAMPLE_MODE:
-        return os.path.join(OUTPUT_DIR, "DaycareBuildings_Enriched_GoogleOnly_100.csv")
     if RUN_API_STATE_TEST_MODE:
         return os.path.join(OUTPUT_DIR, "DaycareBuildings_Enriched_API.csv")
-    if RUN_MODEL_STATE_STAGING:
-        return STAGING_OUTPUT_CSV
-    if VALIDATION_STATE_FILTER:
-        return os.path.join(OUTPUT_DIR, f"DaycareBuildings_Enriched_{VALIDATION_STATE_FILTER}.csv")
-    return SAMPLE_OUTPUT_CSV if RUN_VALIDATION_SAMPLE else OUTPUT_CSV
+    return OUTPUT_CSV
 
 
 def row_has_found_data(row: Dict[str, str]) -> bool:
@@ -8284,23 +4856,15 @@ def load_active_api_model_states() -> List[str]:
 
 
 def get_effective_max_workers() -> int:
-    if RUN_GOOGLE_ONLY_SAMPLE_MODE and GOOGLE_USE_PERSISTENT_PROFILE:
-        LOGGER.info(
-            "Forcing single-worker mode because Google-only sample mode is using a persistent Chrome profile at %s",
-            CHROME_PROFILE_DIR,
-        )
-        return 1
-    if RUN_API_STATE_TEST_MODE:
-        return max(1, min(API_TEST_MAX_WORKERS, len(load_active_api_model_states()) or 1))
-    if USE_STATE_PORTAL_ADAPTERS_ONLY and ADAPTER_ONLY_TEST_STATES:
-        return max(1, len(ADAPTER_ONLY_TEST_STATES))
-    return DEFAULT_MAX_WORKERS
+    return STATE_BATCH_MAX_WORKERS
 
 
 def process_rows(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
-    enricher = DaycareEnricher()
+    checkpoint_override = GOOGLE_CHECKPOINT_FILE if RUN_GOOGLE_QUERY_MODE else CHECKPOINT_FILE
+    enricher = DaycareEnricher(checkpoint_file_override=checkpoint_override)
     output_rows: List[Dict[str, str]] = []
     work_rows = rows
+    pid_to_index = {clean_text(row.get("PID")): index for index, row in enumerate(work_rows, start=1)}
     completed = 0
     found_count = 0
     total_to_process = len(work_rows)
@@ -8313,17 +4877,214 @@ def process_rows(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
         found_count,
     )
 
+    def run_google_side_pass() -> None:
+        google_enricher = DaycareEnricher(checkpoint_file_override=GOOGLE_CHECKPOINT_FILE)
+        google_adapter = GoogleSearchAdapter()
+        try:
+            for row in work_rows:
+                pid = clean_text(row.get("PID"))
+                cached_payload = google_enricher.get_checkpoint_row(pid)
+                cached_row, _cached_sources = google_enricher.extract_checkpoint_payload(cached_payload)
+                if cached_row and row_has_found_data(cached_row):
+                    google_enricher.clear_google_miss(pid)
+                    continue
+                if google_enricher.is_google_miss(pid):
+                    LOGGER.info("Skipping Google side pass for PID=%s because it is recorded in %s", pid, GOOGLE_MISS_FILE)
+                    continue
+                base_row = {header: clean_text(row.get(header, "")) for header in OUTPUT_HEADERS}
+                apply_name_profile_to_row(base_row, get_record_name_profile(row))
+                try:
+                    values, sources = google_adapter.run(google_enricher, row)
+                except Exception:
+                    LOGGER.exception("Google side worker failed for PID=%s", pid)
+                    values, sources = {}, {}
+                for field, value in values.items():
+                    base_row[field] = clean_text(value)
+                if not row_has_found_data(base_row) and not base_row.get("Match_Status"):
+                    base_row["Match_Status"] = "not_found"
+                    base_row["Match_Confidence"] = "0"
+                    base_row["Matched_Reason"] = "No datapoints were found from Google knowledge panel or top search results."
+                if row_has_found_data(base_row):
+                    google_enricher.clear_google_miss(pid)
+                else:
+                    google_enricher.mark_google_miss(pid)
+                google_enricher.set_checkpoint_row(pid, base_row, sources)
+                google_enricher.save_checkpoint()
+            retry_rows = google_enricher.pop_google_antibot_retries()
+            if retry_rows:
+                LOGGER.info(
+                    "Retrying %s Google anti-bot queued PIDs at end of Google side pass",
+                    len(retry_rows),
+                )
+            for pid, row in retry_rows.items():
+                cached_payload = google_enricher.get_checkpoint_row(pid)
+                cached_row, _cached_sources = google_enricher.extract_checkpoint_payload(cached_payload)
+                if cached_row and row_has_found_data(cached_row):
+                    google_enricher.clear_google_miss(pid)
+                    continue
+                if google_enricher.is_google_miss(pid):
+                    LOGGER.info("Skipping Google side retry for PID=%s because it is recorded in %s", pid, GOOGLE_MISS_FILE)
+                    continue
+                base_row = {header: clean_text(row.get(header, "")) for header in OUTPUT_HEADERS}
+                apply_name_profile_to_row(base_row, get_record_name_profile(row))
+                try:
+                    values, sources = google_adapter.run(google_enricher, row)
+                except Exception:
+                    LOGGER.exception("Google side retry worker failed for PID=%s", pid)
+                    values, sources = {}, {}
+                for field, value in values.items():
+                    base_row[field] = clean_text(value)
+                if not row_has_found_data(base_row) and not base_row.get("Match_Status"):
+                    base_row["Match_Status"] = "not_found"
+                    base_row["Match_Confidence"] = "0"
+                    base_row["Matched_Reason"] = "No datapoints were found from Google knowledge panel or top search results."
+                if row_has_found_data(base_row):
+                    google_enricher.clear_google_miss(pid)
+                else:
+                    google_enricher.mark_google_miss(pid)
+                google_enricher.set_checkpoint_row(pid, base_row, sources)
+                google_enricher.save_checkpoint()
+            google_enricher.save_checkpoint()
+            google_enricher.save_staging()
+        finally:
+            google_enricher.close()
+
+    if RUN_GOOGLE_QUERY_MODE:
+        google_adapter = GoogleSearchAdapter()
+        try:
+            for index, row in enumerate(work_rows, start=1):
+                pid = clean_text(row.get("PID"))
+                cached_payload = enricher.get_checkpoint_row(pid)
+                cached_row, _cached_sources = enricher.extract_checkpoint_payload(cached_payload)
+                if cached_row and row_has_found_data(cached_row):
+                    enricher.clear_google_miss(pid)
+                    output_rows.append(cached_row)
+                    completed += 1
+                    found_count += 1
+                    continue
+                base_row = {header: clean_text(row.get(header, "")) for header in OUTPUT_HEADERS}
+                apply_name_profile_to_row(base_row, get_record_name_profile(row))
+                if enricher.is_google_miss(pid):
+                    LOGGER.info("Skipping Google query for PID=%s because it is recorded in %s", pid, GOOGLE_MISS_FILE)
+                    base_row["Match_Status"] = "not_found"
+                    base_row["Match_Confidence"] = "0"
+                    base_row["Matched_Reason"] = "Skipped because this PID was previously recorded as a Google miss."
+                    output_rows.append(base_row)
+                    completed += 1
+                    continue
+                try:
+                    values, sources = google_adapter.run(enricher, row)
+                except Exception:
+                    LOGGER.exception("Google adapter worker failed for PID=%s", row.get("PID", ""))
+                    values, sources = {}, {}
+                for field, value in values.items():
+                    base_row[field] = clean_text(value)
+                if not row_has_found_data(base_row) and not base_row.get("Match_Status"):
+                    base_row["Match_Status"] = "not_found"
+                    base_row["Match_Confidence"] = "0"
+                    base_row["Matched_Reason"] = "No datapoints were found from Google knowledge panel or top search results."
+                if row_has_found_data(base_row):
+                    enricher.clear_google_miss(pid)
+                else:
+                    enricher.mark_google_miss(pid)
+                enricher.set_checkpoint_row(pid, base_row, sources)
+                enricher.set_staging_row(pid, base_row, sources)
+                enricher.save_checkpoint()
+                ordered_results = base_row
+                output_rows.append(ordered_results)
+                completed += 1
+                if row_has_found_data(base_row):
+                    found_count += 1
+                if completed % 25 == 0 or completed == len(work_rows):
+                    LOGGER.info(
+                        "Google mode progress counters total_facilities=%s processed=%s found_data=%s remaining=%s",
+                        total_to_process,
+                        completed,
+                        found_count,
+                        total_to_process - completed,
+                    )
+                    print(f"Processed {completed}/{len(work_rows)} rows")
+                    enricher.save_checkpoint()
+            retry_rows = enricher.pop_google_antibot_retries()
+            if retry_rows:
+                LOGGER.info(
+                    "Retrying %s Google anti-bot queued PIDs at end of Google-only pass",
+                    len(retry_rows),
+                )
+            for pid, row in retry_rows.items():
+                cached_payload = enricher.get_checkpoint_row(pid)
+                cached_row, _cached_sources = enricher.extract_checkpoint_payload(cached_payload)
+                if cached_row and row_has_found_data(cached_row):
+                    enricher.clear_google_miss(pid)
+                    continue
+                if enricher.is_google_miss(pid):
+                    LOGGER.info("Skipping Google retry for PID=%s because it is recorded in %s", pid, GOOGLE_MISS_FILE)
+                    continue
+                base_row = {header: clean_text(row.get(header, "")) for header in OUTPUT_HEADERS}
+                apply_name_profile_to_row(base_row, get_record_name_profile(row))
+                try:
+                    values, sources = google_adapter.run(enricher, row)
+                except Exception:
+                    LOGGER.exception("Google adapter retry worker failed for PID=%s", row.get("PID", ""))
+                    values, sources = {}, {}
+                for field, value in values.items():
+                    base_row[field] = clean_text(value)
+                if not row_has_found_data(base_row) and not base_row.get("Match_Status"):
+                    base_row["Match_Status"] = "not_found"
+                    base_row["Match_Confidence"] = "0"
+                    base_row["Matched_Reason"] = "No datapoints were found from Google knowledge panel or top search results."
+                if row_has_found_data(base_row):
+                    enricher.clear_google_miss(pid)
+                else:
+                    enricher.mark_google_miss(pid)
+                enricher.set_checkpoint_row(pid, base_row, sources)
+                enricher.set_staging_row(pid, base_row, sources)
+                enricher.save_checkpoint()
+            enricher.save_checkpoint()
+            enricher.save_staging()
+            LOGGER.info(
+                "Completed Google adapter processing total_facilities=%s processed=%s found_data=%s",
+                total_to_process,
+                completed,
+                found_count,
+            )
+            return output_rows
+        finally:
+            enricher.close()
+
     def process_state_batch(state_rows: List[Tuple[int, Dict[str, str]]]) -> List[Tuple[int, Dict[str, str]]]:
         state_results: List[Tuple[int, Dict[str, str]]] = []
+        if not state_rows:
+            return state_results
+        batch_state = clean_text(state_rows[0][1].get("Mailing_State"))
         for index, row in state_rows:
             try:
                 state_results.append((index, enricher.enrich_record(row)))
             except Exception:
                 LOGGER.exception("Worker failed for row index=%s PID=%s", index, row.get("PID", ""))
                 state_results.append((index, {header: clean_text(row.get(header, "")) for header in OUTPUT_HEADERS}))
+        timeout_retry_rows = enricher.pop_adapter_timeout_retries(batch_state)
+        if timeout_retry_rows:
+            LOGGER.info("Retrying %s timeout-hit adapter rows at end of state batch state=%s", len(timeout_retry_rows), batch_state)
+            retry_index_map = {clean_text(row.get("PID")): index for index, row in state_rows}
+            for pid, row in timeout_retry_rows.items():
+                index = retry_index_map.get(pid)
+                if not index:
+                    continue
+                try:
+                    retry_result = enricher.enrich_record(row)
+                    for pos, (existing_index, _existing_result) in enumerate(state_results):
+                        if existing_index == index:
+                            state_results[pos] = (index, retry_result)
+                            break
+                except Exception:
+                    LOGGER.exception("Timeout retry failed for state=%s PID=%s", batch_state, pid)
         return state_results
 
     try:
+        google_future = None
+        google_executor = ThreadPoolExecutor(max_workers=1)
+        google_future = google_executor.submit(run_google_side_pass)
         ordered_results: Dict[int, Dict[str, str]] = {}
         if RUN_API_STATE_TEST_MODE or USE_STATE_PORTAL_ADAPTERS_ONLY:
             grouped_rows: Dict[str, List[Tuple[int, Dict[str, str]]]] = {}
@@ -8388,10 +5149,140 @@ def process_rows(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
                         )
                         print(f"Processed {completed}/{len(work_rows)} rows")
                         enricher.save_checkpoint()
+
+        pending_retry_states = []
+        with enricher.api_retry_lock:
+            pending_retry_states = list(enricher.pending_api_city_only_retries.keys())
+        for state in pending_retry_states:
+            api = API_REGISTRY.get(state)
+            if not api or not api.supports_post_run_city_retry():
+                continue
+            pending_city_retries = enricher.pop_api_city_only_retries(state)
+            if not pending_city_retries:
+                continue
+            retry_count = sum(len(city_records) for city_records in pending_city_retries.values())
+            LOGGER.info(
+                "Starting post-run %s city-only retry for %s PIDs across %s cities",
+                state,
+                retry_count,
+                len(pending_city_retries),
+            )
+            enricher.api_city_only_retry_active_states.add(state)
+            try:
+                for city_key, city_records in pending_city_retries.items():
+                    unresolved_records = {}
+                    for pid, retry_record in city_records.items():
+                        index = pid_to_index.get(pid)
+                        if not index:
+                            continue
+                        previous_row = ordered_results.get(index, {})
+                        if row_has_found_data(previous_row):
+                            continue
+                        unresolved_records[pid] = retry_record
+                    if not unresolved_records:
+                        continue
+                    try:
+                        resolved = api.run_city_retry(enricher, city_key, unresolved_records)
+                    except Exception:
+                        LOGGER.exception("%s city-based retry failed for city=%s", state, city_key)
+                        continue
+                    for pid, (values, _sources) in resolved.items():
+                        index = pid_to_index.get(pid)
+                        if not index:
+                            continue
+                        retry_record = unresolved_records[pid]
+                        merged_row = {header: clean_text(retry_record.get(header, "")) for header in OUTPUT_HEADERS}
+                        apply_name_profile_to_row(merged_row, get_record_name_profile(retry_record))
+                        for field, value in values.items():
+                            merged_row[field] = clean_text(value)
+                        merged_row["Telephone"] = normalize_phone(merged_row.get("Telephone", ""))
+                        merged_row["Mailing_Zip"] = normalize_zip(merged_row.get("Mailing_Zip", ""))
+                        merged_row["URL"] = normalize_url(merged_row.get("URL", ""))
+                        previously_found = row_has_found_data(ordered_results.get(index, {}))
+                        ordered_results[index] = merged_row
+                        if row_has_found_data(ordered_results[index]) and not previously_found:
+                            found_count += 1
+                            LOGGER.info("%s city-only retry succeeded for PID=%s city=%s", state, pid, city_key)
+            finally:
+                enricher.api_city_only_retry_active_states.discard(state)
+
+        for index, row in enumerate(work_rows, start=1):
+            current_result = ordered_results.get(index, {})
+            if row_has_found_data(current_result):
+                continue
+            enricher.queue_winnie_retry(row)
+
+        pending_winnie_states = []
+        with enricher.winnie_retry_lock:
+            pending_winnie_states = list(enricher.pending_winnie_retries.keys())
+        if pending_winnie_states:
+            winnie_adapter = WinnieFallbackAdapter()
+            with enricher.winnie_run_lock:
+                previous_winnie_state = ""
+                for state in pending_winnie_states:
+                    if previous_winnie_state and previous_winnie_state != state:
+                        LOGGER.info(
+                            "Winnie fallback switching state from %s to %s; sleeping 30 seconds",
+                            previous_winnie_state,
+                            state,
+                        )
+                        time.sleep(30.0)
+                    pending_city_retries = enricher.pop_winnie_retries(state)
+                    if not pending_city_retries:
+                        previous_winnie_state = state
+                        continue
+                    retry_count = sum(len(city_records) for city_records in pending_city_retries.values())
+                    LOGGER.info(
+                        "Starting Winnie fallback for %s PIDs across %s cities in state=%s",
+                        retry_count,
+                        len(pending_city_retries),
+                        state,
+                    )
+                    for city_key, city_records in pending_city_retries.items():
+                        unresolved_records = {}
+                        for pid, retry_record in city_records.items():
+                            index = pid_to_index.get(pid)
+                            if not index:
+                                continue
+                            previous_row = ordered_results.get(index, {})
+                            if row_has_found_data(previous_row):
+                                continue
+                            unresolved_records[pid] = retry_record
+                        if not unresolved_records:
+                            continue
+                        try:
+                            resolved = winnie_adapter.run_city_retry(enricher, state, city_key, unresolved_records)
+                        except Exception:
+                            LOGGER.exception("Winnie fallback failed for state=%s city=%s", state, city_key)
+                            continue
+                        for pid, (values, _sources) in resolved.items():
+                            index = pid_to_index.get(pid)
+                            if not index:
+                                continue
+                            retry_record = unresolved_records[pid]
+                            merged_row = {header: clean_text(retry_record.get(header, "")) for header in OUTPUT_HEADERS}
+                            apply_name_profile_to_row(merged_row, get_record_name_profile(retry_record))
+                            for field, value in values.items():
+                                merged_row[field] = clean_text(value)
+                            merged_row["Telephone"] = normalize_phone(merged_row.get("Telephone", ""))
+                            merged_row["Mailing_Zip"] = normalize_zip(merged_row.get("Mailing_Zip", ""))
+                            merged_row["URL"] = normalize_url(merged_row.get("URL", ""))
+                            previously_found = row_has_found_data(ordered_results.get(index, {}))
+                            ordered_results[index] = merged_row
+                            enricher.set_checkpoint_row(pid, merged_row, _sources)
+                            enricher.set_staging_row(pid, merged_row, _sources)
+                            if row_has_found_data(ordered_results[index]) and not previously_found:
+                                found_count += 1
+                                LOGGER.info("Winnie fallback succeeded for PID=%s state=%s city=%s", pid, state, city_key)
+                    previous_winnie_state = state
+
         for index in range(1, len(work_rows) + 1):
             output_rows.append(ordered_results[index])
         enricher.save_checkpoint()
         enricher.save_staging()
+        if google_future:
+            google_future.result()
+        google_executor.shutdown(wait=True)
         LOGGER.info(
             "Completed processing all rows total_facilities=%s processed=%s found_data=%s",
             total_to_process,
@@ -8400,6 +5291,16 @@ def process_rows(rows: List[Dict[str, str]]) -> List[Dict[str, str]]:
         )
         return output_rows
     finally:
+        try:
+            if 'google_future' in locals() and google_future:
+                google_future.result()
+        except Exception:
+            LOGGER.exception("Google side worker failed during general run")
+        try:
+            if 'google_executor' in locals():
+                google_executor.shutdown(wait=True)
+        except Exception:
+            pass
         enricher.close()
 
 
@@ -8434,7 +5335,35 @@ def prepare_cleaned_input() -> str:
 
 
 def main() -> None:
+    global SINGLE_PID_FILTER, ADAPTER_ONLY_TEST_STATES, FORCE_HEADED, RUN_GOOGLE_QUERY_MODE
+
+    parser = argparse.ArgumentParser(add_help=True)
+    parser.add_argument("--pid", dest="pid", default="", help="Run only the specified PID.")
+    parser.add_argument("--states", dest="states", default="", help="Comma-separated state list, for example CA,MA,VA.")
+    parser.add_argument("--headed", dest="headed", action="store_true", help="Run browsers in headed mode for testing.")
+    parser.add_argument("--google", dest="google", action="store_true", help="Run Google adapter mode on the selected rows.")
+    args = parser.parse_args()
+
+    if clean_text(args.pid):
+        SINGLE_PID_FILTER = clean_text(args.pid)
+    if clean_text(args.states):
+        ADAPTER_ONLY_TEST_STATES = {
+            clean_text(state).upper()
+            for state in args.states.split(",")
+            if clean_text(state)
+        }
+    if args.headed:
+        FORCE_HEADED = True
+    if args.google:
+        RUN_GOOGLE_QUERY_MODE = True
+
     LOGGER.info("Starting daycare enrichment run")
+    LOGGER.info(
+        "CLI overrides active pid=%s states=%s google_mode=%s",
+        SINGLE_PID_FILTER,
+        sorted(ADAPTER_ONLY_TEST_STATES) if ADAPTER_ONLY_TEST_STATES else [],
+        RUN_GOOGLE_QUERY_MODE,
+    )
     cleaned_input_path = prepare_cleaned_input()
     rows = read_rows(cleaned_input_path)
     rows = select_rows_for_run(rows)
